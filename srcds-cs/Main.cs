@@ -4,10 +4,20 @@ using System.Runtime.InteropServices;
 
 using static Win32;
 
-public enum Architecture
+[Flags]
+public enum ArchitectureOS : ushort
 {
-	X86,
-	X64
+	x86 = 1 << 0,
+	x64 = 1 << 1,
+
+	Windows = 1 << 8,
+	OSX = 1 << 9,
+	Linux = 1 << 10,
+
+	Win32 = x86 | Windows,
+	Win64 = x64 | Win32,
+	Linux32 = x86 | Linux,
+	Linux64 = x64 | Linux,
 }
 
 internal class DedicatedMain
@@ -16,41 +26,42 @@ internal class DedicatedMain
 	delegate int DedicatedMainFunction(IntPtr hInstance, IntPtr hPrevInstance, string lpCmdLine, int nCmdShow);
 
 	public static string CommandLine;
-	public static Architecture Architecture;
-	public static bool IsX64 => Architecture == Architecture.X64;
+	public static ArchitectureOS Architecture;
+	public static bool IsX64 => (Architecture & ArchitectureOS.x64) == ArchitectureOS.x64;
+	public static ArchitectureOS CPU => Architecture & (ArchitectureOS)0x00FF;
+	public static ArchitectureOS Platform => Architecture & (ArchitectureOS)0xFF00;
 	public static IntPtr Instance;
 	public static string Bin;
+
 	public static string GetModulePath(string name) => Path.Combine(Bin, name);
 
-	public static IntPtr LoadWindowsModule(string name) {
-		string realPath = GetModulePath(name);
-		if (!File.Exists(realPath)) 
-			throw new FileNotFoundException($"DLL '{name}' missing? We tried looking here: {realPath}");
-
-		IntPtr dll = LoadLibraryExA(realPath, 0, LOAD_WITH_ALTERED_SEARCH_PATH);
-		if (dll == 0)
-			throw new FileLoadException($"The DLL '{name}' at {realPath} failed to load. Error code: {Marshal.GetLastWin32Error()}");
-
-		return dll;
-	}
-
-	public static IntPtr GetProcAddressWindows(nint module, string name) {
-		return Win32.GetProcAddress(module, name);
-	}
-
 	public static IntPtr LoadModule(string name) {
-		switch (Environment.OSVersion.Platform) {
-			case PlatformID.Win32NT: return LoadWindowsModule(name);
-			default: throw new PlatformNotSupportedException();
+		switch (Platform) {
+			case ArchitectureOS.Windows: {
+					string realPath = GetModulePath(name);
+					if (!File.Exists(realPath))
+						throw new FileNotFoundException($"DLL '{name}' missing? We tried looking here: {realPath}");
+
+					IntPtr dll = LoadLibraryExA(realPath, 0, LOAD_WITH_ALTERED_SEARCH_PATH);
+					if (dll == 0)
+						throw new FileLoadException($"The DLL '{name}' at {realPath} failed to load. Error code: {Marshal.GetLastWin32Error()}");
+
+					return dll;
+				}
+			default: 
+				throw new PlatformNotSupportedException();
 		}
 	}
 
 	public static IntPtr GetProcAddress(nint module, string name) {
-		switch (Environment.OSVersion.Platform) {
-			case PlatformID.Win32NT: return GetProcAddressWindows(module, name);
-			default: throw new PlatformNotSupportedException();
+		switch (Platform) {
+			case ArchitectureOS.Windows:
+				return Win32.GetProcAddress(module, name);
+			default: 
+				throw new PlatformNotSupportedException();
 		}
 	}
+
 	public static T GetProcDelegate<T>(nint module, string name) where T : Delegate {
 		IntPtr ptr = GetProcAddress(module, name);
 		return Marshal.GetDelegateForFunctionPointer<T>(ptr);
@@ -58,11 +69,20 @@ internal class DedicatedMain
 
 	static DedicatedMain() {
 		CommandLine = Environment.CommandLine;
-		Architecture = IntPtr.Size == 8
-						? Architecture.X64
-						: IntPtr.Size == 4
-							? Architecture.X86
-							: throw new PlatformNotSupportedException("You're not running on a 32-bit or 64-bit machine, somehow, or something went terribly wrong.");
+
+		Architecture = IntPtr.Size switch {
+			8 => ArchitectureOS.x64,
+			4 => ArchitectureOS.x86,
+			_ => throw new PlatformNotSupportedException("You're not running on a 32-bit or 64-bit machine, somehow, or something went terribly wrong.")
+		};
+
+		if (OperatingSystem.IsWindows())
+			Architecture |= ArchitectureOS.Windows;
+		else if (OperatingSystem.IsLinux())
+			Architecture |= ArchitectureOS.Linux;
+		else
+			throw new PlatformNotSupportedException("You're not running on a Windows or Linux platform.");
+
 		Instance = GetModuleHandle(null);
 		Bin = Path.Combine(AppContext.BaseDirectory, "bin", IsX64 ? "win64" : "");
 	}

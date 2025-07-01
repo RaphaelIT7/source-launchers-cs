@@ -9,17 +9,31 @@ namespace srcds_cs;
 
 public interface IImplementsDetours
 {
-	public void Setup(HookEngine engine);
+	public void SetupWin32(HookEngine engine) { DetourManager.NotSupported = true; }
+	public void SetupWin64(HookEngine engine) { DetourManager.NotSupported = true; }
+	public void SetupLinux32(HookEngine engine) { DetourManager.NotSupported = true; }
+	public void SetupLinux64(HookEngine engine) { DetourManager.NotSupported = true; }
 }
 
-internal unsafe static class DetourManager
+public unsafe static class DetourManager
 {
+	// This stuff is just to catch any errors switching to new architecture/OS in detour-land
+	// Defining an empty method is enough for this not to trigger so just do that in that case
+
+	public static bool NotSupported = false;
+	public static bool WasSupported() {
+		bool notSupported = NotSupported;
+		NotSupported = false;
+		return !notSupported;
+	}
+
+	static Dictionary<string, nint> loadedModules = [];
+
 	public static T AddDetour<T>(this HookEngine engine, string module, ReadOnlySpan<byte?> pattern, T del) where T : Delegate {
 		T original = engine.CreateHook(ScanModuleProc32(module, pattern), del);
 		return original;
 	}
 
-	static Dictionary<string, nint> loadedModules = [];
 	public static nint GetModuleAddress32(string name) {
 		if (!loadedModules.TryGetValue(name, out nint address)) {
 			address = LoadLibraryExA(Path.Combine(AppContext.BaseDirectory, "bin", name), IntPtr.Zero, LOAD_WITH_ALTERED_SEARCH_PATH);
@@ -69,7 +83,15 @@ internal unsafe static class DetourManager
 		foreach (var implType in implTypes) {
 			var instance = (IImplementsDetours)Activator.CreateInstance(implType)!;
 			implementors.Add(instance);
-			instance.Setup(engine);
+			switch (DedicatedMain.Architecture) {
+				case ArchitectureOS.Win32: instance.SetupWin32(engine); break;
+				case ArchitectureOS.Win64: instance.SetupWin64(engine); break;
+				case ArchitectureOS.Linux32: instance.SetupLinux32(engine); break;
+				case ArchitectureOS.Linux64: instance.SetupLinux64(engine); break;
+			}
+			if (!WasSupported()) {
+				throw new NotImplementedException($"The detour-class '{implType.FullName ?? implType.Name}' did not implement Setup{DedicatedMain.Architecture}.");
+			}
 		}
 		engine.EnableHooks();
 	}
