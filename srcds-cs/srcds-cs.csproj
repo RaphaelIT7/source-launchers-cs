@@ -1,0 +1,37 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<OutputType>WinExe</OutputType>
+		<TargetFramework>net8.0</TargetFramework>
+		<RootNamespace>srcds_cs</RootNamespace>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Nullable>enable</Nullable>
+		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+		<Platforms>AnyCPU;x64;x86</Platforms>
+	</PropertyGroup>
+
+	<ItemGroup>
+	  <None Include="MinHook\MinHook.NET.csproj" />
+	  <None Include="MinHook\SharpDisasm\SharpDisasm.csproj" />
+	</ItemGroup>
+
+	<ItemGroup>
+	  <None Update="MinHook\SharpDisasm\Udis86\OpTable.tt">
+	    <Generator>TextTemplatingFileGenerator</Generator>
+	    <LastGenOutput>OpTable.cs</LastGenOutput>
+	  </None>
+	</ItemGroup>
+
+	<ItemGroup>
+	  <Service Include="{508349b6-6b84-4df5-91f0-309beebad82d}" />
+	</ItemGroup>
+
+	<ItemGroup>
+	  <Compile Update="MinHook\SharpDisasm\Udis86\OpTable.cs">
+	    <DesignTime>True</DesignTime>
+	    <AutoGen>True</AutoGen>
+	    <DependentUpon>OpTable.tt</DependentUpon>
+	  </Compile>
+	</ItemGroup>
+
+</Project>
