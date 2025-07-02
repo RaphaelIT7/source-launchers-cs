@@ -17,6 +17,6 @@ internal unsafe class BetterConsole : IImplementsDetours
 	}
 
 	public void SetupWin32(HookEngine engine) {
-		CSys_CreateConsoleWindow_Original = engine.AddDetour<CSys_CreateConsoleWindow>("dedicated.dll", [0xFF, 0x15, 0x10, 0x80, 0x30, 0x65, 0x85, 0xC0], new(CSys_CreateConsoleWindow_Detour));
+		CSys_CreateConsoleWindow_Original = engine.AddDetour<CSys_CreateConsoleWindow>("dedicated.dll", [0xFF, 0x15, 0x10, 0x80, null, null, null, 0xC0], new(CSys_CreateConsoleWindow_Detour));
 	}
 }
