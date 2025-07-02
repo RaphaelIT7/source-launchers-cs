@@ -66,9 +66,8 @@ public unsafe static class DetourManager
 				if (matched)
 					return baseAddress + i;
 			}
+			throw new NullReferenceException("Cannot find signature");
 		}
-
-		return 0;
 	}
 
 	static HookEngine? engine;
