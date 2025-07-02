@@ -7,10 +7,9 @@ namespace srcds_cs.Detours;
 public unsafe class CSys(void* ptr) : CppClassInterface<CSys.VTable>(ptr)
 {
 	public void Sleep(int msec) => Table()->Sleep(self, msec);
-	public void ConsoleOutput(string @string) {
-		using AnsiBuffer str = new(@string);
-		Table()->ConsoleOutput(str);
-	}
+	public void ConsoleOutput(string @string) => Table()->ConsoleOutput(new AnsiBuffer(@string));
+	public void WriteStatusText(string szText) => Table()->WriteStatusText(new AnsiBuffer(szText));
+	public void ErrorMessage(int level, string msg) => Table()->ErrorMessage(level, new AnsiBuffer(msg));
 	public struct VTable
 	{
 		public delegate* unmanaged<void*, void> dtor;
@@ -19,9 +18,9 @@ public unsafe class CSys(void* ptr) : CppClassInterface<CSys.VTable>(ptr)
 
 		public delegate* unmanaged<void*, int, void> Sleep;
 		public delegate* unmanaged<void*, sbyte*, bool> GetExecutableName;
-		public delegate* unmanaged<void*, int, sbyte*, void> ErrorMessage;
+		public delegate* unmanaged<int, sbyte*, void> ErrorMessage;
 
-		public delegate* unmanaged<void*, sbyte*, void> WriteStatusText;
+		public delegate* unmanaged<sbyte*, void> WriteStatusText;
 		public delegate* unmanaged<void*, int, void> UpdateStatus;
 
 		public delegate* unmanaged<void*, sbyte*, nint> LoadLibrary;
@@ -52,6 +51,7 @@ internal unsafe class LoadModules : IImplementsDetours
 
 		CSys sys = new(self);
 		CDedicatedAppSystemGroup appSystemGroup = new(pAppSystemGroup);
+		sys.ConsoleOutput("Hello from .NET-land!");
 
 		return true;
 	}
