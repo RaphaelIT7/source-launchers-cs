@@ -63,8 +63,17 @@ public unsafe static class DetourManager
 					}
 				}
 
-				if (matched)
+				if (matched) {
+					Console.Write($"[srcds-cs / Scanning] Found signature ");
+					foreach(var b in scan) {
+						if (b == null)
+							Console.Write("?? ");
+						else
+							Console.Write($"{b:X} ");
+					}
+					Console.WriteLine($"at address +{i:X} in {moduleName}!");
 					return baseAddress + i;
+				}
 			}
 			throw new NullReferenceException("Cannot find signature");
 		}
@@ -76,6 +85,7 @@ public unsafe static class DetourManager
 		engine?.Dispose();
 		implementors.Clear();
 		engine = new HookEngine();
+		Console.WriteLine($"[srcds-cs / Detours] Bootstrapping detours...");
 
 		var implBaseType = typeof(IImplementsDetours);
 		var implTypes = AppDomain.CurrentDomain.GetAssemblies().SelectMany(asm => asm.GetTypes()).Where(p => implBaseType.IsAssignableFrom(p) && !p.IsInterface);
@@ -91,7 +101,11 @@ public unsafe static class DetourManager
 			if (!WasSupported()) {
 				throw new NotImplementedException($"The detour-class '{implType.FullName ?? implType.Name}' did not implement Setup{DedicatedMain.Architecture}.");
 			}
+			else {
+				Console.WriteLine($"[srcds-cs / Detours] Initialized {implType.Name} for {DedicatedMain.Architecture}");
+			}
 		}
 		engine.EnableHooks();
+		Console.WriteLine($"[srcds-cs / Detours] Detours ready.");
 	}
 }
