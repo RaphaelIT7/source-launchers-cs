@@ -1,7 +1,5 @@
 ﻿using System.Runtime.InteropServices;
 
-namespace srcds_cs;
-
 public static class Win32
 {
 	public const uint LOAD_WITH_ALTERED_SEARCH_PATH = 0x00000008;

@@ -1,5 +1,7 @@
 ﻿using MinHook;
 
+using Source;
+
 using System.Runtime.InteropServices;
 
 namespace srcds_cs.Detours;
@@ -50,8 +52,8 @@ internal unsafe class LoadModules : IImplementsDetours
 		CSys_LoadModules_Original(self, pAppSystemGroup);
 
 		CSys sys = new(self);
-		CDedicatedAppSystemGroup appSystemGroup = new(pAppSystemGroup);
 		sys.ConsoleOutput("Hello from .NET-land!");
+		CDedicatedAppSystemGroup appSystemGroup = new(pAppSystemGroup);
 
 		return true;
 	}

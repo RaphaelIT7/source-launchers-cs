@@ -1,5 +1,7 @@
 ﻿using MinHook;
 
+using Source;
+
 using System.Runtime.InteropServices;
 
 namespace srcds_cs.Detours;
