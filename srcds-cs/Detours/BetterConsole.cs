@@ -12,7 +12,7 @@ internal unsafe class BetterConsole : IImplementsDetours
 {
 	[UnmanagedFunctionPointer(CallingConvention.ThisCall)]
 	delegate bool CSys_CreateConsoleWindow(void* ptr);
-	static CSys_CreateConsoleWindow CSys_CreateConsoleWindow_Original;
+	static CSys_CreateConsoleWindow? CSys_CreateConsoleWindow_Original;
 
 	static bool CSys_CreateConsoleWindow_Detour(void* ptr) {
 		return true;

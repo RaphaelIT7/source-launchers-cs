@@ -46,10 +46,10 @@ internal unsafe class LoadModules : IImplementsDetours
 {
 	[UnmanagedFunctionPointer(CallingConvention.ThisCall)]
 	delegate bool CSys_LoadModules(void* self, void* pAppSystemGroup);
-	static CSys_LoadModules CSys_LoadModules_Original;
+	static CSys_LoadModules? CSys_LoadModules_Original;
 
 	static bool CSys_LoadModules_Detour(void* self, void* pAppSystemGroup) {
-		CSys_LoadModules_Original(self, pAppSystemGroup);
+		CSys_LoadModules_Original!(self, pAppSystemGroup);
 
 		CSys sys = new(self);
 		sys.ConsoleOutput("Hello from .NET-land!");
