@@ -65,6 +65,8 @@ public static partial class Program
 
 	public static T GetProcDelegate<T>(nint module, string name) where T : Delegate {
 		IntPtr ptr = GetProcAddress(module, name);
+		if (ptr == 0)
+			throw new NullReferenceException($"Cannot find '{name}' procedure.");
 		return Marshal.GetDelegateForFunctionPointer<T>(ptr);
 	}
 
