@@ -3,8 +3,6 @@
 using System.Runtime.InteropServices;
 using Source;
 
-using static Win32;
-
 public static partial class Program
 {
 	[UnmanagedFunctionPointer(CallingConvention.StdCall, CharSet = CharSet.Ansi)]

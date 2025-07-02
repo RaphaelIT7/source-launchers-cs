@@ -400,4 +400,4 @@ FodyWeavers.xsd
 # JetBrains Rider
 *.sln.iml
 srcds-cs/Properties/launchSettings.json
-Directory.Build.props
+UserSpecific.props
