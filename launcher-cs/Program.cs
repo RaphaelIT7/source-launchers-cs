@@ -7,16 +7,16 @@ using Source;
 public static partial class Program
 {
 	[UnmanagedFunctionPointer(CallingConvention.StdCall, CharSet = CharSet.Ansi)]
-	delegate int DedicatedMainFunction(IntPtr hInstance, IntPtr hPrevInstance, string lpCmdLine, int nCmdShow);
+	delegate int LauncherMainFunction(IntPtr hInstance, IntPtr hPrevInstance, string lpCmdLine, int nCmdShow);
 
 	static void Main(string[] _) {
 		Console.WriteLine(); // top bar gets overridden
-		Console.WriteLine($"[srcds-cs / Main] Initializing...");
-		var dedicated = LoadModule("launcher.dll");
-		var dedicatedMain = GetProcDelegate<DedicatedMainFunction>(dedicated, "DedicatedMain");
+		Console.WriteLine($"[launcher-cs / Main] Initializing...");
+		var launcher = LoadModule("launcher.dll");
+		var launcherMain = GetProcDelegate<LauncherMainFunction>(launcher, "LauncherMain");
 		DetourManager.Bootstrap();
-		Console.WriteLine($"[srcds-cs / Main] Our work is done - entering DedicatedMain");
+		Console.WriteLine($"[launcher-cs / Main] Our work is done - entering LauncherMain");
 		Console.WriteLine("");
-		dedicatedMain(Instance, 0, CommandLine, 1);
+		launcherMain(Instance, 0, CommandLine, 1);
 	}
 }

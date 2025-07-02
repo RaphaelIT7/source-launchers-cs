@@ -18,5 +18,7 @@
 		<Compile Include="..\source-shared\MinHook\SharpDisasm\Translators\*.cs" Link="Shared\MinHook\SharpDisasm\Translators\%(Filename)%(Extension)" />
 		<Compile Include="..\source-shared\MinHook\SharpDisasm\Udis86\*.cs" Link="Shared\MinHook\SharpDisasm\Udis86\%(Filename)%(Extension)" />
 	</ItemGroup>
+
 	<Import Project="UserSpecific.props" />
+
 </Project>
