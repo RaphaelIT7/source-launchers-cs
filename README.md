@@ -1,11 +1,42 @@
 # srcds-cs
 
-This is an experiment to replicate ``dedicated_main`` in C#. It performs basically the same task that srcds.exe would do, since srcds.exe is just loading the dedicated.dll module and calling the ``DedicatedMain`` procedure.
+This is an experiment to replicate ``launcher_main`` and ``dedicated_main`` in C#. It performs basically the same task that hl2.exe/srcds.exe do, since those executables just load the launcher/dedicated.dll modules and call the ``LauncherMain``/``DedicatedMain`` procedures respectively.
 
-This needs to be opened in the same directory srcds.exe would be in, with the necessary dll's/exe's/etc. 
+## Launcher
 
-I just have this in my Directory.Build.props:
+UserSpecific.props:
+```
+<Project>
+	<PropertyGroup Condition="'$(Platform)' == 'x86'">
+		<OutputPath>path\to\GarrysMod\bin</OutputPath>
+	</PropertyGroup>
 
+	<PropertyGroup Condition="'$(Platform)' == 'x64'">
+		<OutputPath>path\to\GarrysMod\bin\win64</OutputPath>
+	</PropertyGroup>
+
+	<PropertyGroup>
+		<AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+		<AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+	</PropertyGroup>
+</Project>
+```
+
+launchSettings.json:
+```
+{
+  "profiles": {
+    "launcher-cs": {
+      "commandName": "Project",
+      "nativeDebugging": true
+    }
+  }
+}
+```
+
+## SRCDS
+
+UserSpecific.props:
 ```
 <Project>
   <PropertyGroup>
@@ -16,8 +47,7 @@ I just have this in my Directory.Build.props:
 </Project>
 ```
 
-and this in my launchSettings.json:
-
+launchSettings.json:
 ```
 {
   "profiles": {
