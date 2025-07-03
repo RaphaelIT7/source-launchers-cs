@@ -1,7 +1,7 @@
 ﻿using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
-namespace srcds_cs;
+namespace Source;
 
 public readonly ref struct AnsiBuffer
 {
@@ -35,6 +35,7 @@ public abstract class CppClassInterface<VTable> : IContainsClassPointer where VT
 	public unsafe CppClassInterface(void* ptr) => self = ptr;
 	public unsafe CppClassInterface(nint ptr) => self = (void*)ptr;
 
+	public unsafe nint GetPointer() => (nint)self;
 	public unsafe void SetPointer(nint pointer) {
 		self = (void*)pointer;
 	}

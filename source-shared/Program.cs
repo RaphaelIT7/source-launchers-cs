@@ -21,7 +21,7 @@ public enum ArchitectureOS : ushort
 	Linux = 1 << 10,
 
 	Win32 = x86 | Windows,
-	Win64 = x64 | Win32,
+	Win64 = x64 | Windows,
 	Linux32 = x86 | Linux,
 	Linux64 = x64 | Linux,
 }
