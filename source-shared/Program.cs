@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -73,12 +74,7 @@ public static partial class Program
 	}
 
 	static Program() {
-		CommandLine = Regex.Replace(
-			Environment.CommandLine,
-			@"(?<=\s*[""']?)([a-zA-Z]:\\(?:[^""'\s]+\\)*[^""'\s]+)\.dll(?=[""'\s]|$)",
-			m => m.Groups[1].Value + ".exe",
-			RegexOptions.IgnoreCase
-		);
+		CommandLine = Environment.CommandLine.Substring(Assembly.GetEntryAssembly()!.Location.Length);
 
 
 		Architecture = IntPtr.Size switch {
