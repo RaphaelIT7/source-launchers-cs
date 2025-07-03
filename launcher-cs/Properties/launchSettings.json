@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "launcher-cs": {
+      "commandName": "Project",
+      "nativeDebugging": true
+    }
+  }
+}
