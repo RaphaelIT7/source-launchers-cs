@@ -71,7 +71,6 @@ public struct LoggingContext_t
 
 public unsafe class ManagedLoggingListener : CppClassInterface<ManagedLoggingListener.VTable>
 {
-
 	public struct VTable
 	{
 		public delegate* unmanaged<void*, LoggingContext_t*, sbyte*, void> Log;
@@ -115,7 +114,6 @@ internal unsafe class PlugIntoSpew : IImplementsDetours
 	public void SetupWin64(HookEngine engine) {
 		for (int i = 0; i < 15; i++) {
 			LoggingSystem_SetChannelSpewLevel(i, LoggingSeverity_t.Message);
-
 		}
 		// ManagedLoggingListener listener = new ManagedLoggingListener();
 		// LoggingSystem_RegisterLoggingListener((void*)listener.GetPointer());
