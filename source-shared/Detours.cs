@@ -19,7 +19,7 @@ public unsafe static class Scanning {
 
 	public static nint GetModuleAddress32(string name) {
 		if (!loadedModules.TryGetValue(name, out nint address)) {
-			address = LoadLibraryExA(Path.Combine(Program.Bin, name), IntPtr.Zero, LOAD_WITH_ALTERED_SEARCH_PATH);
+			address = LoadLibraryExA(Path.Combine(Main.Program.Bin, name), nint.Zero, LOAD_WITH_ALTERED_SEARCH_PATH);
 			loadedModules[name] = address;
 		}
 
@@ -92,17 +92,17 @@ public unsafe static class DetourManager
 		foreach (var implType in implTypes) {
 			var instance = (IImplementsDetours)Activator.CreateInstance(implType)!;
 			implementors.Add(instance);
-			switch (Program.Architecture) {
+			switch (Main.Program.Architecture) {
 				case ArchitectureOS.Win32: instance.SetupWin32(engine); break;
 				case ArchitectureOS.Win64: instance.SetupWin64(engine); break;
 				case ArchitectureOS.Linux32: instance.SetupLinux32(engine); break;
 				case ArchitectureOS.Linux64: instance.SetupLinux64(engine); break;
 			}
 			if (!WasSupported()) {
-				throw new NotImplementedException($"The detour-class '{implType.FullName ?? implType.Name}' did not implement Setup{Program.Architecture}.");
+				throw new NotImplementedException($"The detour-class '{implType.FullName ?? implType.Name}' did not implement Setup{Main.Program.Architecture}.");
 			}
 			else {
-				Console.WriteLine($"[source / Detours] Initialized {implType.Name} for {Program.Architecture}");
+				Console.WriteLine($"[source / Detours] Initialized {implType.Name} for {Main.Program.Architecture}");
 			}
 		}
 		engine.EnableHooks();

@@ -73,6 +73,7 @@ public static partial class Program
 		return Marshal.GetDelegateForFunctionPointer<T>(ptr);
 	}
 
+
 	static Program() {
 		CommandLine = Environment.CommandLine.Substring(Assembly.GetEntryAssembly()!.Location.Length);
 
@@ -91,11 +92,11 @@ public static partial class Program
 			throw new PlatformNotSupportedException("You're not running on a Windows or Linux platform.");
 
 		Instance = Win32.GetModuleHandle(null);
-		RemakeBinStr();
+		SetBinString();
 	}
 
 	[MemberNotNull(nameof(Bin))]
-	static void RemakeBinStr() {
-		Bin = Path.Combine(AppContext.BaseDirectory, "bin", IsX64 ? "win64" : "");
+	public static void SetBinString(string? str = null) {
+		Bin = str ?? Path.Combine(AppContext.BaseDirectory, "bin", IsX64 ? "win64" : "");
 	}
 }
