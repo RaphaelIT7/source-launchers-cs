@@ -12,40 +12,11 @@ using System.Runtime.InteropServices;
 
 namespace srcds_cs.Detours;
 
-public unsafe class _CSys(void* ptr) : CppClassInterface<_CSys.VTable>(ptr)
-{
-	public void Sleep(int msec) => Table()->Sleep(self, msec);
-	public void ConsoleOutput(string @string) => Table()->ConsoleOutput(new AnsiBuffer(@string));
-	public void WriteStatusText(string szText) => Table()->WriteStatusText(new AnsiBuffer(szText));
-	public void ErrorMessage(int level, string msg) => Table()->ErrorMessage(level, new AnsiBuffer(msg));
-	public struct VTable
-	{
-		public delegate* unmanaged<void*, void> dtor;
-
-		public delegate* unmanaged<void*, void*, bool> LoadModules;
-
-		public delegate* unmanaged<void*, int, void> Sleep;
-		public delegate* unmanaged<void*, sbyte*, bool> GetExecutableName;
-		public delegate* unmanaged<int, sbyte*, void> ErrorMessage;
-
-		public delegate* unmanaged<sbyte*, void> WriteStatusText;
-		public delegate* unmanaged<void*, int, void> UpdateStatus;
-
-		public delegate* unmanaged<void*, sbyte*, nint> LoadLibrary;
-		public delegate* unmanaged<void*, nint, void> FreeLibrary;
-
-		public delegate* unmanaged<void*, bool> CreateConsoleWindow;
-		public delegate* unmanaged<void*, void> DestroyConsoleWindow;
-
-		public delegate* unmanaged<sbyte*, void> ConsoleOutput;
-	}
-}
-
 public interface CSys : ICppClass
 {
 	[VTMethodOffset(11)]
 	[VTMethodSelfPtr(false)]
-	public unsafe void ConsoleOutput(sbyte* txt);
+	public unsafe void ConsoleOutput(AnsiBuffer txt);
 }
 
 internal unsafe class LoadModules : IImplementsDetours
@@ -58,7 +29,7 @@ internal unsafe class LoadModules : IImplementsDetours
 		CSys_LoadModules_Original!(self, pAppSystemGroup);
 
 		CSys sys = MarshalCpp.Cast<CSys>(self);
-		sys.ConsoleOutput(new AnsiBuffer("Hello from .NET-land!"));
+		sys.ConsoleOutput("Hello from .NET land!");
 
 		return true;
 	}

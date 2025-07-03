@@ -15,6 +15,7 @@ public readonly ref struct AnsiBuffer
 	public unsafe sbyte* AsPointer() => (sbyte*)ptr.ToPointer();
 	public void Dispose() => Marshal.FreeHGlobal(ptr);
 	public static unsafe implicit operator sbyte*(AnsiBuffer buffer) => buffer.AsPointer();
+	public static unsafe implicit operator AnsiBuffer(string text) => new(text);
 	public static unsafe string? ToManaged(void* ptr) => Marshal.PtrToStringAnsi(new(ptr));
 	public static unsafe string? ToManaged(sbyte* ptr) => Marshal.PtrToStringAnsi(new(ptr));
 	public static unsafe string? ToManaged(sbyte* ptr, uint len) => Marshal.PtrToStringAnsi(new(ptr), (int)len);
