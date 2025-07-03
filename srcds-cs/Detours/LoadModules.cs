@@ -2,11 +2,17 @@
 
 using Source;
 
+using System;
+using System.Linq.Expressions;
+using System.Reflection;
+using System.Reflection.Emit;
+using System.Reflection.PortableExecutable;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 namespace srcds_cs.Detours;
 
-public unsafe class CSys(void* ptr) : CppClassInterface<CSys.VTable>(ptr)
+public unsafe class _CSys(void* ptr) : CppClassInterface<_CSys.VTable>(ptr)
 {
 	public void Sleep(int msec) => Table()->Sleep(self, msec);
 	public void ConsoleOutput(string @string) => Table()->ConsoleOutput(new AnsiBuffer(@string));
@@ -35,11 +41,11 @@ public unsafe class CSys(void* ptr) : CppClassInterface<CSys.VTable>(ptr)
 	}
 }
 
-public unsafe class CDedicatedAppSystemGroup(void* ptr) : CppClassInterface<CDedicatedAppSystemGroup.VTable>(ptr) {
-	public struct VTable
-	{
-
-	}
+public interface CSys : ICppClass
+{
+	[VTMethodOffset(11)]
+	[VTMethodSelfPtr(false)]
+	public unsafe void ConsoleOutput(sbyte* txt);
 }
 
 internal unsafe class LoadModules : IImplementsDetours
@@ -51,9 +57,8 @@ internal unsafe class LoadModules : IImplementsDetours
 	static bool CSys_LoadModules_Detour(void* self, void* pAppSystemGroup) {
 		CSys_LoadModules_Original!(self, pAppSystemGroup);
 
-		CSys sys = new(self);
-		sys.ConsoleOutput("Hello from .NET-land!");
-		CDedicatedAppSystemGroup appSystemGroup = new(pAppSystemGroup);
+		CSys sys = MarshalCpp.Cast<CSys>(self);
+		sys.ConsoleOutput(new AnsiBuffer("Hello from .NET-land!"));
 
 		return true;
 	}
