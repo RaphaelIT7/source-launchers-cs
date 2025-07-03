@@ -1,8 +1,10 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
 namespace Source.Main;
@@ -71,7 +73,13 @@ public static partial class Program
 	}
 
 	static Program() {
-		CommandLine = Environment.CommandLine;
+		CommandLine = Regex.Replace(
+			Environment.CommandLine,
+			@"(?<=\s*[""']?)([a-zA-Z]:\\(?:[^""'\s]+\\)*[^""'\s]+)\.dll(?=[""'\s]|$)",
+			m => m.Groups[1].Value + ".exe",
+			RegexOptions.IgnoreCase
+		);
+
 
 		Architecture = IntPtr.Size switch {
 			8 => ArchitectureOS.x64,
@@ -87,6 +95,11 @@ public static partial class Program
 			throw new PlatformNotSupportedException("You're not running on a Windows or Linux platform.");
 
 		Instance = Win32.GetModuleHandle(null);
+		RemakeBinStr();
+	}
+
+	[MemberNotNull(nameof(Bin))]
+	static void RemakeBinStr() {
 		Bin = Path.Combine(AppContext.BaseDirectory, "bin", IsX64 ? "win64" : "");
 	}
 }
