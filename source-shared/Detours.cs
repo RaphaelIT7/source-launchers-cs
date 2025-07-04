@@ -61,6 +61,20 @@ public unsafe static class Scanning {
 			throw new NullReferenceException("Cannot find signature");
 		}
 	}
+
+	// expects a string of two-character hex codes (or ?? wildcards) separated by spaces until the final hex character
+	// will throw up if given anything else
+	internal static byte?[] Parse(string sig) {
+		byte?[] ret = new byte?[(sig.Length + 1) / 3];
+		for (int i = 0; i < sig.Length; i += 3) {
+			ReadOnlySpan<char> ch = sig.AsSpan()[i..(i + 2)];
+			if (ch[0] == '?' || ch[1] == '?')
+				ret[i / 3] = null;
+			else
+				ret[i / 3] = Convert.FromHexString(ch)[0];
+		}
+		return ret;
+	}
 }
 
 public unsafe static class DetourManager

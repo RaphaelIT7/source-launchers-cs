@@ -1,6 +1,7 @@
 ﻿using MinHook;
 
 using Source;
+using Source.Main;
 
 using System;
 using System.Linq.Expressions;
@@ -14,15 +15,20 @@ namespace srcds_cs.Detours;
 
 public interface CSys : ICppClass
 {
-	[CppMethodFromVTOffset(11)][CppMethodSelfPtr(false)] public unsafe void ConsoleOutput(AnsiBuffer txt);
+	[CppMethodFromVTOffset(11)]
+	[CppMethodSelfPtr(false)] 
+	public unsafe void ConsoleOutput(AnsiBuffer txt);
 }
 
 public unsafe interface ICvar : ICppClass
 {
-	[CppMethodFromSigScan("vstdlib.dll", "55 8B EC 51 53 57 8B 7D 08 8B D9 8B CF 8B 07 8B")]
-	[CppMethodSelfPtr(false)]
-	public unsafe void RegisterConCommand(ICvar self, ConCommandBase txt);
+	[CppMethodFromSigScan(ArchitectureOS.Win32, "vstdlib", "55 8B EC 51 53 57 8B 7D 08 8B D9 8B CF 8B 07 8B")]
+	[CppMethodSelfPtr(true)]
+	public unsafe void RegisterConCommand(ConCommandBase txt);
 
+	[CppMethodFromSigScan(ArchitectureOS.Win32, "vstdlib", "55 8B EC A1 B4 27 ?? ?? 56 8B F1 A8 01 75 2D")]
+	[CppMethodSelfPtr(true)]
+	public unsafe void FindVar(AnsiBuffer var_name);
 }
 
 public unsafe interface ConCommandBase : ICppClass
@@ -51,8 +57,11 @@ internal unsafe class LoadModules : IImplementsDetours
 		CSys_LoadModules_Original = engine.AddDetour<CSys_LoadModules>("dedicated.dll", [0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x60, 0x56, 0x8B], new(CSys_LoadModules_Detour));
 		// Does this work?
 		ICvar cvar = Source.Engine.CreateInterface<ICvar>("vstdlib.dll", CVAR_INTERFACE_VERSION)!;
-		ConCommandBase cmd = MarshalCpp.New<ConCommandBase>();
-		cvar.RegisterConCommand(cvar, cmd);
+		cvar.FindVar("sv_cheats");
+
+		//nint findvar = Scanning.ScanModuleProc32("vstdlib.dll", Scanning.Parse("55 8B EC A1 B4 27 ?? ?? 56 8B F1 A8 01 75 2D"));
+		//var dggg = (delegate* unmanaged<void*, void*, void*>)findvar;
+		//var test = dggg((void*)cvar.Pointer, new AnsiBuffer("sv_cheats"));
 	}
 
 	public const string CVAR_INTERFACE_VERSION = "VEngineCvar004";

@@ -6,6 +6,9 @@ using System.Runtime.InteropServices;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using Source.Main;
+using System.Reflection.Metadata.Ecma335;
+using System.Reflection.Metadata;
+using System.Reflection.PortableExecutable;
 
 namespace Source;
 
@@ -98,22 +101,16 @@ public class CppMethodFromVTOffsetAttribute(int offset) : Attribute
 /// </summary>
 /// <param name="offset"></param>
 [AttributeUsage(AttributeTargets.Method)]
-public class CppMethodFromSigScanAttribute(string dll, string sig) : Attribute
+public class CppMethodFromSigScanAttribute(ArchitectureOS arch, string dll, string sig) : Attribute
 {
+	public ArchitectureOS Architecture => arch;
 	public string DLL => dll;
 	byte?[]? sigscan;
 	public byte?[] Signature {
 		get {
 			if (sigscan != null) return sigscan;
 
-			sigscan = new byte?[(sig.Length + 1) / 3];
-			for (int i = 0; i < sig.Length; i += 3) {
-				ReadOnlySpan<char> ch = sig.AsSpan()[i..(i + 2)];
-				if (ch[0] == '?' || ch[1] == '?')
-					sigscan[i / 3] = null;
-				else
-					sigscan[i / 3] = Convert.FromHexString(ch)[0];
-			}
+			sigscan = Scanning.Parse(sig);
 
 			return sigscan;
 		}
@@ -149,7 +146,7 @@ public static unsafe class MarshalCpp
 	{
 		public bool IsNativeCall;
 		public FieldBuilder Field;
-		public Delegate Delegate;
+		public nint Delegate;
 	}
 
 	private static Dictionary<Type, Type> intTypeToDynType = [];
@@ -196,7 +193,7 @@ public static unsafe class MarshalCpp
 
 			nint cppMethod;
 			if (vtableOffsetN == null) {
-				var sigAttr = method.GetCustomAttribute<CppMethodFromSigScanAttribute>();
+				var sigAttr = method.GetCustomAttributes<CppMethodFromSigScanAttribute>().Where(x => x.Architecture == Program.Architecture).FirstOrDefault();
 				if (sigAttr == null) {
 					genInterfaceStub(typeBuilder, method);
 					continue;
@@ -221,10 +218,13 @@ public static unsafe class MarshalCpp
 			// Allocate Type[] with length of Parameters + SelfPtr (if needed) + 1 for return type since
 			// this builds the managed delegate type
 			Type[] types = new Type[parameters.Length + (vt_useSelfPtr ? 1 : 0) + 1];
-			Type[] justParams = new Type[parameters.Length];
+			Type[] justParams = new Type[parameters.Length + (vt_useSelfPtr ? 1 : 0)];
 			// Some calls don't take in a void*. I believe this is a compiler optimization that discards unused parameters?
 			// Entirely guessing but regardless theres not a good enough way to automatically discern it hence this
-			if (vt_useSelfPtr) pushArray(typeof(void*), types, ref typeIndex);
+			if (vt_useSelfPtr) {
+				pushArray(typeof(nint), types, ref typeIndex);
+				pushArray(typeof(nint), justParams, ref pTypeIndex);
+			}
 
 			// Figure out how to marshal any other types in the parameter list.
 			foreach (ParameterInfo param in parameters) {
@@ -237,12 +237,8 @@ public static unsafe class MarshalCpp
 			// rather than be reused
 			pushArray(getMarshalType(method.ReturnParameter), types, ref typeIndex);
 
-			// Build the managed delegate type ...
-			Type delegateType = Expression.GetDelegateType(types);
-			// ... then cast the function pointer to it ...
-			Delegate delegateInstance = Marshal.GetDelegateForFunctionPointer(cppMethod, delegateType);
 			// ... then rewrite the dynamic object's method so it implements the interface as expected.
-			genInterfaceNativePtr(typeBuilder, method, delegateType, pointerField, delegateInstance, justParams, vt_useSelfPtr, info, ref infoIndex);
+			genInterfaceNativePtr(typeBuilder, method, cppMethod, pointerField, justParams, vt_useSelfPtr, info, ref infoIndex);
 		}
 		// Setup Pointer. Since this comes from C++ land lets not let the user change it without throwing
 		{
@@ -348,18 +344,32 @@ public static unsafe class MarshalCpp
 			// Implement IDisposable.Dispose
 			typeBuilder.DefineMethodOverride(disposeMethod, typeof(IDisposable).GetMethod("Dispose")!);
 		}
+		{
+			ConstructorBuilder staticCtor = typeBuilder.DefineConstructor(
+				MethodAttributes.Static | MethodAttributes.Private,
+				CallingConventions.Standard,
+				Type.EmptyTypes
+			);
+
+			ILGenerator cctorIL = staticCtor.GetILGenerator();
+
+			for (int i = 0; i < info.Length; i++) {
+				ref ImplFieldNameToDelegate def = ref info[i];
+
+				if (def.IsNativeCall) {
+					cctorIL.Emit(OpCodes.Ldc_I8, (long)def.Delegate); // load the nint as long
+					cctorIL.Emit(OpCodes.Conv_I); // convert to native int
+					cctorIL.Emit(OpCodes.Stsfld, def.Field); // store into static field
+				}
+				else {
+					// handle other cases like delegates here if needed
+				}
+			}
+
+			cctorIL.Emit(OpCodes.Ret);
+		}
 
 		generatedType = typeBuilder.CreateType();
-
-		// We need to update the static backing fields from before (info)
-		{
-			for (int i = 0; i < info.Length; i++) {
-				ref ImplFieldNameToDelegate fn2del = ref info[i];
-				if (!fn2del.IsNativeCall) continue;
-
-				generatedType.GetField(fn2del.Field.Name, BindingFlags.Static | BindingFlags.NonPublic)!.SetValue(null, fn2del.Delegate);
-			}
-		}
 
 		intTypeToDynType[interfaceType] = generatedType;
 		return generatedType;
@@ -375,7 +385,7 @@ public static unsafe class MarshalCpp
 		var type = param.ParameterType;
 		var marshalTo = param.GetCustomAttribute<MarshalAsAttribute>()?.Value;
 		if (type.IsAssignableTo(typeof(ICppClass))) {
-			return typeof(void*);
+			return typeof(nint);
 		}
 
 		if (param.ParameterType == typeof(void))
@@ -391,30 +401,26 @@ public static unsafe class MarshalCpp
 			default: throw new NotImplementedException($"MarshalAs: no marshalAs case for {marshalTo}.");
 		}
 	}
-
+	public static nint getPointerOrSelf(object obj) {
+		return obj is ICppClass cpp ? cpp.Pointer : (nint)Marshal.GetIUnknownForObject(obj);
+	}
 	private static void genInterfaceNativePtr(
-		TypeBuilder typeBuilder, MethodInfo method, Type delegateType, FieldBuilder pointerField, Delegate delegateInstance,
+		TypeBuilder typeBuilder, MethodInfo method, nint cppMethodPtr, FieldBuilder pointerField,
 		Type[] justParams, bool selfPtrFirst, ImplFieldNameToDelegate[] fields, ref int fieldArPtr) {
-		var methodBuilder = typeBuilder.DefineMethod(
+
+		MethodBuilder methodBuilder = typeBuilder.DefineMethod(
 				method.Name,
 				MethodAttributes.Public | MethodAttributes.Virtual,
 				method.ReturnType,
 				Array.ConvertAll(method.GetParameters(), p => p.ParameterType)
 			);
 
-		var il = methodBuilder.GetILGenerator();
-
-		// Call the delegateInstance
-		// if selfPtrFirst then the first argument into delegateInstance must be the 
-		// ICppClass's Pointer property.
-
-		var parameters = method.GetParameters();
-		var paramTypes = Array.ConvertAll(parameters, p => p.ParameterType);
+		ILGenerator il = methodBuilder.GetILGenerator();
 
 		var fieldName = $"__impl_{method.Name}";
 		var delField = typeBuilder.DefineField(
 			fieldName,
-			delegateType,
+			typeof(nint),
 			FieldAttributes.Private | FieldAttributes.Static
 		);
 
@@ -422,25 +428,23 @@ public static unsafe class MarshalCpp
 		pushArray(new ImplFieldNameToDelegate() {
 			IsNativeCall = true,
 			Field = delField,
-			Delegate = delegateInstance
+			Delegate = cppMethodPtr
 		}, fields, ref fieldArPtr);
 
-		// 0 will always be delField
 		il.Emit(OpCodes.Ldsfld, delField);
+
 		if (selfPtrFirst) {
-			// Read our pointer object
 			il.Emit(OpCodes.Ldarg_0);
 			il.Emit(OpCodes.Ldfld, pointerField);
 		}
+
+		ParameterInfo[] parameters = method.GetParameters();
 		for (int i = 0; i < parameters.Length; i++) {
-			il.Emit(OpCodes.Ldarg, i + 1);
+			il.Emit(OpCodes.Ldarg, 1 + i);
 		}
 
-		var invokeMethod = delegateType.GetMethod("Invoke", BindingFlags.Public | BindingFlags.Instance)!;
-		il.Emit(OpCodes.Callvirt, invokeMethod);
+		il.EmitCalli(OpCodes.Calli, CallingConvention.ThisCall, method.ReturnType, justParams);
 		il.Emit(OpCodes.Ret);
-
-		typeBuilder.DefineMethodOverride(methodBuilder, method);
 	}
 
 	private static void genInterfaceStub(TypeBuilder typeBuilder, MethodInfo method) {
