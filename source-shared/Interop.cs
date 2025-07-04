@@ -63,16 +63,17 @@ public abstract class CppClassInterface<VTable> : IContainsClassPointer where VT
 /// <br/>
 /// If you're trying to create an instance of the class that can be passed to C++, use <see cref="MarshalCpp.New{T}()"/>. Note that if in C#, T is expected to be a struct and the return value is T*
 /// </summary>
-public interface ICppClass : IDisposable
+public abstract class ICppClass : IDisposable
 {
 	/// <summary>
 	/// The unmanaged pointer.
 	/// </summary>
-	public nint Pointer { get; set; }
+	public virtual nint Pointer { get; set; }
 	/// <summary>
 	/// Designates that <see cref="Pointer"/> cannot be changed. This likely means it came from a nint -> interface cast.
 	/// </summary>
-	public bool ReadOnly { get; }
+	public virtual bool ReadOnly { get; }
+	public virtual void Dispose() { }
 }
 
 /// <summary>
@@ -124,8 +125,8 @@ public static unsafe class MarshalCpp
 	private static Type GetOrCreateDynamicCppType(Type interfaceType, void* ptr) {
 		if (intTypeToDynType.TryGetValue(interfaceType, out Type? generatedType))
 			return generatedType;
-		if (!interfaceType.IsInterface)
-			throw new InvalidOperationException($"typeof(T) == {interfaceType.FullName ?? interfaceType.Name} - was not interface. Cast expects an interface, which it then dynamically creates an object implementing the interface, with methods pointing towards C++ vtable pointers");
+		if (!interfaceType.IsAbstract)
+			throw new InvalidOperationException($"typeof(T) == {interfaceType.FullName ?? interfaceType.Name} - was not abstract. Cast expects an abstract class, which it then dynamically creates an object implementing the abstract class, with methods pointing towards C++ vtable pointers");
 
 		if (DynAssembly == null) {
 			AssemblyName assemblyName = new("MarshalCpp");
@@ -143,7 +144,7 @@ public static unsafe class MarshalCpp
 		ModuleBuilder dynModule = DynCppInterfaceFactory;
 
 		string typeName = "Dynamic" + interfaceType.Name;
-		TypeBuilder typeBuilder = dynModule.DefineType(typeName, TypeAttributes.Public, null, [interfaceType]);
+		TypeBuilder typeBuilder = dynModule.DefineType(typeName, TypeAttributes.Public, interfaceType, []);
 
 		nint vtablePtr = *(nint*)ptr;
 		nint* vtable = (nint*)vtablePtr;
@@ -155,7 +156,7 @@ public static unsafe class MarshalCpp
 		foreach (var method in methods) {
 			int? vtableOffsetN = method.GetCustomAttribute<VTMethodOffsetAttribute>()?.Offset;
 			if (vtableOffsetN == null) {
-				genInterfaceStub(typeBuilder, method);
+				//genInterfaceStub(typeBuilder, method);
 				continue;
 			}
 
