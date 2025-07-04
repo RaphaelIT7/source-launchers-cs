@@ -4,6 +4,8 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
+using Source.Main;
 
 namespace Source;
 
@@ -20,6 +22,8 @@ public readonly ref struct AnsiBuffer
 	public static unsafe string? ToManaged(sbyte* ptr) => Marshal.PtrToStringAnsi(new(ptr));
 	public static unsafe string? ToManaged(sbyte* ptr, uint len) => Marshal.PtrToStringAnsi(new(ptr), (int)len);
 }
+
+// TODO: deprecate everything below.
 public interface IContainsClassPointer
 {
 	public void SetPointer(IntPtr pointer);
@@ -115,6 +119,8 @@ public static unsafe class MarshalCpp
 	private static Dictionary<Type, Type> intTypeToDynType = [];
 	private static AssemblyBuilder? DynAssembly;
 	private static ModuleBuilder? DynCppInterfaceFactory;
+
+
 	private static Type GetOrCreateDynamicCppType(Type interfaceType, void* ptr) {
 		if (intTypeToDynType.TryGetValue(interfaceType, out Type? generatedType))
 			return generatedType;
@@ -408,4 +414,174 @@ public static unsafe class MarshalCpp
 
 		typeBuilder.DefineMethodOverride(methodBuilder, method);
 	}
+}
+
+// ------------------------------------------------------------------------------- //
+// Source-specific Interop
+//     This stuff interfaces with AppFramework, etc.
+// ------------------------------------------------------------------------------- //
+
+public delegate IntPtr CreateInterfaceFn(string name, ref int code);
+public unsafe delegate void WalkInterfaceFn(string name, nint createFn);
+
+public unsafe struct InterfaceReg
+{
+	public void* m_CreateFn;
+	public byte* m_pName;
+	public InterfaceReg* m_pNext;
+}
+
+/// <summary>
+/// Engine-specific interop.
+/// </summary>
+public static class Engine {
+	public static unsafe T? CreateInterface<T>(string moduleName, string interfaceName, bool inlinedCall = true) where T : ICppClass
+		=> CreateInterface(moduleName, interfaceName, out T? obj, inlinedCall) ? obj : default;
+	/// <summary>
+	/// Create or get an interface from a Source Engine process. <typeparamref name="T"/> must be a <see cref="ICppClass"/> of some kind. It will be
+	/// cast by <see cref="MemoryMarshal"/> automatically from the address CreateInterface provides.
+	/// </summary>
+	public static unsafe bool CreateInterface<T>(
+		string moduleName,        // example: engine.dll
+		string interfaceName,      // example: VModelInfoServer004, or whatever
+		[NotNullWhen(true)] out T? interfaceObj,
+		bool isInlinedCall = true
+	) where T : ICppClass {
+#if _WIN32
+		IntPtr module = Win32.GetModuleHandle(moduleName);
+
+		if (module == IntPtr.Zero) {
+			Tier0.Plat_MessageBox("CreateInterface issue", $"Failed to get a pointer to the module '{moduleName}'.");
+			interfaceObj = default;
+			return false;
+		}
+
+		IntPtr createInterfacePtr = Win32.GetProcAddress(module, "CreateInterface");
+		if (createInterfacePtr == IntPtr.Zero) {
+			Tier0.Plat_MessageBox("CreateInterface issue", $"Failed to get a pointer to the CreateInterface procedure.");
+			interfaceObj = default;
+			return false;
+		}
+
+		CreateInterfaceFn createInterface = Marshal.GetDelegateForFunctionPointer<CreateInterfaceFn>(createInterfacePtr);
+
+		int retcode = 0;
+		IntPtr interfacePtr = createInterface(interfaceName, ref retcode);
+		if (interfacePtr == IntPtr.Zero) {
+			Tier0.Plat_MessageBox("CreateInterface issue", $"CreateInterface failed to return an object. Retcode: {retcode}");
+			interfaceObj = default;
+			return false;
+		}
+
+		interfaceObj = MarshalCpp.Cast<T>(interfacePtr);
+		return true;
+	}
+	// Untested rewrite to not use ReadProcessMemory. Probably doesn't work.
+	private static unsafe bool __WalkInterfaces(nint createInterfacePtr, WalkInterfaceFn walker) {
+		if (Program.IsX64) {
+			// TODO: this entire thing is only WinX64 compatible...
+			// Retrieves a pointer to x64 instruction mov rbx, QWORD
+			// the QWORD decompiles to an if statement, which should be checking if s_pInterfaceRegs is null
+			IntPtr sInterfaceRegsInstr = createInterfacePtr + 15;
+			// dump out 7 bytes to get the instruction
+			Span<byte> instr = new((void*)(Process.GetCurrentProcess().Handle + sInterfaceRegsInstr), 7);
+			// sanity check
+			Debug.Assert(instr[0] == 0x48 && instr[1] == 0x8B && instr[2] == 0x1D, "unexpected instruction format, expected rip-relative MOV");
+			int ripOffset = BitConverter.ToInt32(instr[3..]);
+			nint absAddress = sInterfaceRegsInstr + 7 + ripOffset;
+			Span<byte> regPtrBytes = new((void*)(Process.GetCurrentProcess().Handle + absAddress), IntPtr.Size);
+			IntPtr interfaceRegPtr = BitConverter.ToInt32(regPtrBytes);
+			unsafe {
+				InterfaceReg* firstReg = (InterfaceReg*)interfaceRegPtr;
+				while (firstReg != null) {
+					string managedName = Marshal.PtrToStringAnsi((nint)firstReg->m_pName) ?? "";
+					walker(managedName, (nint)firstReg->m_CreateFn);
+					firstReg = firstReg->m_pNext;
+				}
+				return true;
+			}
+		}
+		else {
+			throw new PlatformNotSupportedException("Cannot fully do this on 32-bit yet.");
+		}
+	}
+
+	/// <summary>
+	/// Makes an attempt to iterate over the interface list of a tier1+ module.
+	/// </summary>
+	/// <param name="moduleName"></param>
+	/// <returns></returns>
+	public static bool WalkInterfaces(string moduleName, WalkInterfaceFn walker) {
+		IntPtr module = Win32.GetModuleHandle(moduleName);
+		if (module == IntPtr.Zero) {
+			Tier0.Plat_MessageBox("CreateInterface issue", $"Failed to get a pointer to the module '{moduleName}'."); return false;
+		}
+
+		IntPtr createInterfacePtr = Win32.GetProcAddress(module, "CreateInterface");
+		if (createInterfacePtr == IntPtr.Zero) {
+			Tier0.Plat_MessageBox("CreateInterface issue", $"Failed to get a pointer to the CreateInterface procedure."); return false;
+		}
+
+		return __WalkInterfaces(createInterfacePtr, walker);
+	}
+	/// <summary>
+	/// Scans every loaded porcess module for a CreateInterface fn. If it exists, attempts a call to <see cref="WalkInterfaces"/>.
+	/// <br></br>
+	/// Unlike the by-name module-specific function equiv., this prefixes the module name before calling <see cref="WalkInterfaceFn"/>.
+	/// </summary>
+	/// <param name="walker"></param>
+	/// <returns></returns>
+	public static void WalkInterfaces(WalkInterfaceFn walker) {
+		foreach (ProcessModule module in Process.GetCurrentProcess().Modules) {
+			IntPtr createInterfacePtr = Win32.GetProcAddress(module.BaseAddress, "CreateInterface");
+			if (createInterfacePtr == IntPtr.Zero)
+				continue;
+
+			// add module name here
+			if (!__WalkInterfaces(createInterfacePtr, (name, ptr) => walker($"{module.ModuleName} > {name}", ptr)))
+				Console.WriteLine($"ERROR: {module.ModuleName} failed to produce a s_pInterfaceRegs linked list");
+		}
+	}
+#else
+#error Please implement the platform.
+#endif
+}
+
+
+/// <summary>
+/// Tier0 interop. Tier0 has a *lot* of exported functions we can use easily
+/// </summary>
+
+public static unsafe partial class Tier0
+{
+	private const string dllname = "tier0";
+	private const UnmanagedType utf8 = UnmanagedType.LPUTF8Str;
+
+	[DllImport(dllname)] public static extern void ConMsg([MarshalAs(utf8)] string msg);
+	[DllImport(dllname)] public static extern void Error([MarshalAs(utf8)] string msg);
+	[DllImport(dllname)] public static extern void GetCurrentDate(int* pDay, int* pMonth, int* pYear);
+	public static void GetCurrentDate(out int pDay, out int pMonth, out int pYear) {
+		int day, month, year;
+		GetCurrentDate(&day, &month, &year);
+		pDay = day;
+		pMonth = month;
+		pYear = year;
+	}
+	[DllImport(dllname)] public static extern void Msg([MarshalAs(utf8)] string msg);
+	[DllImport(dllname)] public static extern void DevMsg([MarshalAs(utf8)] string msg);
+	[DllImport(dllname)] public static extern void ConDMsg([MarshalAs(utf8)] string msg);
+	[DllImport(dllname)] public static extern long Plat_CycleTime();
+	[DllImport(dllname)] public static extern void Plat_ExitProcess(int nCode);
+	[DllImport(dllname)] public static extern void Plat_ExitProcessWithError(int nCode, bool generateMinidump);
+	[DllImport(dllname)] public static extern double Plat_FloatTime();
+	[DllImport(dllname)] public static extern void Plat_GetModuleFilename(sbyte* pOut, int maxBytes);
+	[DllImport(dllname)] public static extern uint Plat_DebugString(string psz);
+	[DllImport(dllname)] public static extern uint Plat_MSTime();
+	[DllImport(dllname)] public static extern ulong Plat_USTime();
+	[DllImport(dllname)] public static extern bool Plat_IsInBenchmarkMode();
+	[DllImport(dllname)] public static extern bool Plat_IsInDebugSession();
+	[DllImport(dllname)] public static extern bool Plat_IsUserAnAdmin();
+	[DllImport(dllname)] public static extern void Plat_MessageBox([MarshalAs(utf8)] string title, [MarshalAs(utf8)] string message);
+	[DllImport(dllname)] public static extern void Plat_SetBenchmarkMode(bool bBenchmark);
+	[DllImport(dllname)] public static extern void DoNewAssertDialog([MarshalAs(utf8)] string filename, int line, [MarshalAs(utf8)] string expression);
 }
