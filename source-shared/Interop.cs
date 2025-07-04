@@ -184,8 +184,6 @@ public static unsafe class MarshalCpp
 		TypeBuilder typeBuilder = dynModule.DefineType(typeName, TypeAttributes.Public, null, [interfaceType]);
 
 		MethodInfo[] methods = interfaceType.GetMethods();
-		ImplFieldNameToDelegate[] info = new ImplFieldNameToDelegate[methods.Length];
-		int infoIndex = 0;
 		FieldBuilder pointerField = typeBuilder.DefineField("_pointer", typeof(nint), FieldAttributes.Private);
 		foreach (var method in methods) {
 			int? vtableOffsetN = method.GetCustomAttribute<CppMethodFromVTOffsetAttribute>()?.Offset;
@@ -237,8 +235,8 @@ public static unsafe class MarshalCpp
 			// rather than be reused
 			pushArray(getMarshalType(method.ReturnParameter), types, ref typeIndex);
 
-			// ... then rewrite the dynamic object's method so it implements the interface as expected.
-			genInterfaceNativePtr(typeBuilder, method, cppMethod, pointerField, justParams, vt_useSelfPtr, info, ref infoIndex);
+			// Rewrite the dynamic object's method so it implements the interface as expected
+			genInterfaceNative(typeBuilder, method, types, cppMethod, pointerField, vt_useSelfPtr);
 		}
 		// Setup Pointer. Since this comes from C++ land lets not let the user change it without throwing
 		{
@@ -344,30 +342,6 @@ public static unsafe class MarshalCpp
 			// Implement IDisposable.Dispose
 			typeBuilder.DefineMethodOverride(disposeMethod, typeof(IDisposable).GetMethod("Dispose")!);
 		}
-		{
-			ConstructorBuilder staticCtor = typeBuilder.DefineConstructor(
-				MethodAttributes.Static | MethodAttributes.Private,
-				CallingConventions.Standard,
-				Type.EmptyTypes
-			);
-
-			ILGenerator cctorIL = staticCtor.GetILGenerator();
-
-			for (int i = 0; i < info.Length; i++) {
-				ref ImplFieldNameToDelegate def = ref info[i];
-
-				if (def.IsNativeCall) {
-					cctorIL.Emit(OpCodes.Ldc_I8, (long)def.Delegate); // load the nint as long
-					cctorIL.Emit(OpCodes.Conv_I); // convert to native int
-					cctorIL.Emit(OpCodes.Stsfld, def.Field); // store into static field
-				}
-				else {
-					// handle other cases like delegates here if needed
-				}
-			}
-
-			cctorIL.Emit(OpCodes.Ret);
-		}
 
 		generatedType = typeBuilder.CreateType();
 
@@ -382,69 +356,79 @@ public static unsafe class MarshalCpp
 	}
 
 	private static Type getMarshalType(ParameterInfo param) {
-		var type = param.ParameterType;
-		var marshalTo = param.GetCustomAttribute<MarshalAsAttribute>()?.Value;
-		if (type.IsAssignableTo(typeof(ICppClass))) {
+		if (param.ParameterType.IsAssignableTo(typeof(ICppClass)))
 			return typeof(nint);
-		}
 
-		if (param.ParameterType == typeof(void))
-			return typeof(void);
-
-		if (marshalTo == null) {
-			return type;
-			//throw new NotImplementedException("not providing MarshalAs is not yet implemented");
-		}
-
-		switch (marshalTo) {
-			case UnmanagedType.LPStr: return typeof(sbyte*);
-			default: throw new NotImplementedException($"MarshalAs: no marshalAs case for {marshalTo}.");
-		}
+		return param.ParameterType;
 	}
-	public static nint getPointerOrSelf(object obj) {
-		return obj is ICppClass cpp ? cpp.Pointer : (nint)Marshal.GetIUnknownForObject(obj);
-	}
-	private static void genInterfaceNativePtr(
-		TypeBuilder typeBuilder, MethodInfo method, nint cppMethodPtr, FieldBuilder pointerField,
-		Type[] justParams, bool selfPtrFirst, ImplFieldNameToDelegate[] fields, ref int fieldArPtr) {
+	private static OpCode getNumericConversionOpcode(Type from, Type to) {
+		if (to == typeof(byte)) return OpCodes.Conv_U1;
+		if (to == typeof(sbyte)) return OpCodes.Conv_I1;
+		if (to == typeof(short)) return OpCodes.Conv_I2;
+		if (to == typeof(ushort)) return OpCodes.Conv_U2;
+		if (to == typeof(int)) return OpCodes.Conv_I4;
+		if (to == typeof(uint)) return OpCodes.Conv_U4;
+		if (to == typeof(long)) return OpCodes.Conv_I8;
+		if (to == typeof(ulong)) return OpCodes.Conv_U8;
+		if (to == typeof(float)) return OpCodes.Conv_R4;
+		if (to == typeof(double)) return OpCodes.Conv_R8;
+		if (to == typeof(IntPtr)) return OpCodes.Conv_I;
+		if (to == typeof(UIntPtr)) return OpCodes.Conv_U;
 
-		MethodBuilder methodBuilder = typeBuilder.DefineMethod(
+		throw new NotSupportedException($"Cannot implicitly convert from {from} to {to}");
+	}
+
+
+	private static void genInterfaceNative(TypeBuilder typeBuilder, MethodInfo method, Type[] types, nint nativePtr, FieldBuilder _pointer, bool selfPtr) {
+		var mparams = Array.ConvertAll(method.GetParameters(), p => p.ParameterType);
+		var methodBuilder = typeBuilder.DefineMethod(
 				method.Name,
 				MethodAttributes.Public | MethodAttributes.Virtual,
 				method.ReturnType,
-				Array.ConvertAll(method.GetParameters(), p => p.ParameterType)
+				mparams
 			);
 
-		ILGenerator il = methodBuilder.GetILGenerator();
+		var il = methodBuilder.GetILGenerator();
 
-		var fieldName = $"__impl_{method.Name}";
-		var delField = typeBuilder.DefineField(
-			fieldName,
-			typeof(nint),
-			FieldAttributes.Private | FieldAttributes.Static
-		);
-
-		// Push this for later, the static constructor deals with this
-		pushArray(new ImplFieldNameToDelegate() {
-			IsNativeCall = true,
-			Field = delField,
-			Delegate = cppMethodPtr
-		}, fields, ref fieldArPtr);
-
-		il.Emit(OpCodes.Ldsfld, delField);
-
-		if (selfPtrFirst) {
+		if (selfPtr) {
 			il.Emit(OpCodes.Ldarg_0);
-			il.Emit(OpCodes.Ldfld, pointerField);
+			il.Emit(OpCodes.Ldfld, _pointer);
+		}
+		int start = selfPtr ? 1 : 0;
+		for (int i = start; i < types.Length - 1; i++) {
+			Type expectedNativeType = types[i];
+			Type providedManagedType = mparams[i - start];
+			il.Emit(OpCodes.Ldarg, i);
+			// Check against the index in types
+			// if we need to emit an implicit cast?
+			// we need to cast what's at Ldarg (given its probably providedManagedType) to expectedNativeType at runtime here
+			if (expectedNativeType != providedManagedType) {
+				if (expectedNativeType.IsValueType && providedManagedType.IsValueType)
+					// Integer or float widening/narrowing
+					il.Emit(getNumericConversionOpcode(providedManagedType, expectedNativeType));
+				else if (!expectedNativeType.IsValueType && !providedManagedType.IsValueType)
+					// Reference type cast
+					il.Emit(OpCodes.Castclass, expectedNativeType);
+				else if (expectedNativeType.IsValueType && !providedManagedType.IsValueType)
+					// Unbox to value type
+					il.Emit(OpCodes.Unbox_Any, expectedNativeType);
+				else if (!expectedNativeType.IsValueType && providedManagedType.IsValueType)
+					// Box the value type
+					il.Emit(OpCodes.Box, providedManagedType);
+				else
+					throw new InvalidOperationException($"Unsupported cast from {providedManagedType} to {expectedNativeType}");
+
+			}
 		}
 
-		ParameterInfo[] parameters = method.GetParameters();
-		for (int i = 0; i < parameters.Length; i++) {
-			il.Emit(OpCodes.Ldarg, 1 + i);
-		}
+		il.Emit(OpCodes.Ldc_I8, (long)nativePtr);
+		il.Emit(OpCodes.Conv_I);
 
-		il.EmitCalli(OpCodes.Calli, CallingConvention.ThisCall, method.ReturnType, justParams);
+		il.EmitCalli(OpCodes.Calli, CallingConvention.ThisCall, types[types.Length - 1], types[..(types.Length - 1)]);
+
 		il.Emit(OpCodes.Ret);
+
+		typeBuilder.DefineMethodOverride(methodBuilder, method);
 	}
 
 	private static void genInterfaceStub(TypeBuilder typeBuilder, MethodInfo method) {
