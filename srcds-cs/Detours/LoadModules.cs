@@ -30,6 +30,17 @@ public unsafe interface ICvar : ICppClass
 	[VTMethodOffset(6)][VTMethodSelfPtr(true)] public void RegisterConCommand(void* pCommandBase);
 }
 
+public unsafe interface ConCommandBase : ICppClass
+{
+	// IAppSystem stuff
+	[VTMethodOffset(0)][VTMethodSelfPtr(true)] public void ConCommandBase_ctor();
+	[VTMethodOffset(1)][VTMethodSelfPtr(true)] public void ConCommandBase_ctor(AnsiBuffer name, AnsiBuffer helpString, int flags);
+	[VTMethodOffset(2)][VTMethodSelfPtr(true)] public void ConCommandBase_dtor(AnsiBuffer name, AnsiBuffer helpString, int flags);
+	[VTMethodOffset(3)][VTMethodSelfPtr(true)] public bool IsCommand();
+}
+
+
+
 internal unsafe class LoadModules : IImplementsDetours
 {
 	[UnmanagedFunctionPointer(CallingConvention.ThisCall)]
@@ -49,6 +60,7 @@ internal unsafe class LoadModules : IImplementsDetours
 		CSys_LoadModules_Original = engine.AddDetour<CSys_LoadModules>("dedicated.dll", [0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x60, 0x56, 0x8B], new(CSys_LoadModules_Detour));
 		// Does this work?
 		ICvar cvar = Source.Engine.CreateInterface<ICvar>("vstdlib.dll", CVAR_INTERFACE_VERSION)!;
+		
 		cvar.RegisterConCommand(null); // lol
 	}
 

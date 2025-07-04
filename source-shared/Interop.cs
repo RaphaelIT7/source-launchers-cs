@@ -14,6 +14,7 @@ public readonly ref struct AnsiBuffer
 	private readonly nint ptr;
 	public AnsiBuffer(string? text) => ptr = Marshal.StringToHGlobalAnsi(text);
 	public unsafe AnsiBuffer(void* text) => ptr = (nint)text;
+	public unsafe AnsiBuffer(nint text) => ptr = text;
 	public unsafe sbyte* AsPointer() => (sbyte*)ptr.ToPointer();
 	public void Dispose() => Marshal.FreeHGlobal(ptr);
 	public static unsafe implicit operator sbyte*(AnsiBuffer buffer) => buffer.AsPointer();
@@ -75,6 +76,13 @@ public interface ICppClass : IDisposable
 	public bool ReadOnly { get; }
 }
 
+public static class CppClassExts
+{
+	public static unsafe Span<T> Span<T>(this ICppClass clss, nint offset, int length) where T : unmanaged {
+		return new Span<T>((void*)(clss.Pointer + offset), length);
+	}
+}
+
 /// <summary>
 /// Marks where to read the virtual function.
 /// </summary>
@@ -110,7 +118,8 @@ public static unsafe class MarshalCpp
 		values[index++] = value;
 	}
 
-	struct ImplFieldNameToDelegate {
+	struct ImplFieldNameToDelegate
+	{
 		public bool IsNativeCall;
 		public FieldBuilder Field;
 		public Delegate Delegate;
@@ -119,7 +128,6 @@ public static unsafe class MarshalCpp
 	private static Dictionary<Type, Type> intTypeToDynType = [];
 	private static AssemblyBuilder? DynAssembly;
 	private static ModuleBuilder? DynCppInterfaceFactory;
-
 
 	private static Type GetOrCreateDynamicCppType(Type interfaceType, void* ptr) {
 		if (intTypeToDynType.TryGetValue(interfaceType, out Type? generatedType))
@@ -196,8 +204,8 @@ public static unsafe class MarshalCpp
 			genInterfaceNativePtr(typeBuilder, method, delegateType, delegateInstance, justParams, vt_useSelfPtr, info, ref infoIndex);
 		}
 		// Setup Pointer. Since this comes from C++ land lets not let the user change it without throwing
-		{
 			FieldBuilder pointerField = typeBuilder.DefineField("_pointer", typeof(nint), FieldAttributes.Private);
+		{
 
 			PropertyBuilder pointerBuilder = typeBuilder.DefineProperty(
 				"Pointer",
@@ -265,7 +273,7 @@ public static unsafe class MarshalCpp
 			ConstructorBuilder ctorBuilder = typeBuilder.DefineConstructor(
 				MethodAttributes.Public,
 				CallingConventions.Standard,
-				Type.EmptyTypes // no parameters
+				[typeof(nint)] // single pointer constructor param
 			);
 
 			ILGenerator il = ctorBuilder.GetILGenerator();
@@ -274,6 +282,11 @@ public static unsafe class MarshalCpp
 			il.Emit(OpCodes.Ldarg_0); // Load "this"
 			ConstructorInfo objectCtor = typeof(object).GetConstructor(Type.EmptyTypes)!;
 			il.Emit(OpCodes.Call, objectCtor);
+
+			il.Emit(OpCodes.Ldarg_0); 
+			il.Emit(OpCodes.Ldarg_1);
+			FieldInfo ptrField = pointerField;
+			il.Emit(OpCodes.Stfld, ptrField); 
 
 			il.Emit(OpCodes.Ret);
 		}
@@ -315,7 +328,7 @@ public static unsafe class MarshalCpp
 	public static T Cast<T>(nint ptr) where T : ICppClass => Cast<T>((void*)ptr);
 	public static T Cast<T>(void* ptr) where T : ICppClass {
 		var generatedType = GetOrCreateDynamicCppType(typeof(T), ptr);
-		return (T)Activator.CreateInstance(generatedType)!;
+		return (T)Activator.CreateInstance(generatedType, [(nint)ptr])!;
 	}
 
 	private static Type getMarshalType(ParameterInfo param) {
@@ -337,7 +350,7 @@ public static unsafe class MarshalCpp
 	}
 
 	private static void genInterfaceNativePtr(
-		TypeBuilder typeBuilder, MethodInfo method, Type delegateType, Delegate delegateInstance, 
+		TypeBuilder typeBuilder, MethodInfo method, Type delegateType, Delegate delegateInstance,
 		Type[] justParams, bool selfPtrFirst, ImplFieldNameToDelegate[] fields, ref int fieldArPtr) {
 		var methodBuilder = typeBuilder.DefineMethod(
 				method.Name,
@@ -434,7 +447,8 @@ public unsafe struct InterfaceReg
 /// <summary>
 /// Engine-specific interop.
 /// </summary>
-public static class Engine {
+public static class Engine
+{
 	public static unsafe T? CreateInterface<T>(string moduleName, string interfaceName, bool inlinedCall = true) where T : ICppClass
 		=> CreateInterface(moduleName, interfaceName, out T? obj, inlinedCall) ? obj : default;
 	/// <summary>
