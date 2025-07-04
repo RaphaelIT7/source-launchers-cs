@@ -14,6 +14,7 @@
 	<ItemGroup>
 		<Compile Include="..\source-shared\*.cs" Link="Shared\%(Filename)%(Extension)" />
 		<Compile Include="..\source-shared\MinHook\*.cs" Link="Shared\MinHook\%(Filename)%(Extension)" />
+		<Compile Include="..\source-shared\SDK\*.cs" Link="Shared\MinHook\%(Filename)%(Extension)" />
 		<Compile Include="..\source-shared\MinHook\SharpDisasm\*.cs" Link="Shared\MinHook\SharpDisasm\%(Filename)%(Extension)" />
 		<Compile Include="..\source-shared\MinHook\SharpDisasm\Helpers\*.cs" Link="Shared\MinHook\SharpDisasm\Helpers\%(Filename)%(Extension)" />
 		<Compile Include="..\source-shared\MinHook\SharpDisasm\Translators\*.cs" Link="Shared\MinHook\SharpDisasm\Translators\%(Filename)%(Extension)" />

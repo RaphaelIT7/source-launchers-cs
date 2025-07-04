@@ -2,6 +2,7 @@
 
 using Source;
 using Source.Main;
+using Source.SDK;
 
 using System;
 using System.Linq.Expressions;
@@ -12,25 +13,6 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 namespace srcds_cs.Detours;
-
-public interface CSys : ICppClass
-{
-	[CppMethodFromVTOffset(11)]
-	public unsafe void ConsoleOutput(AnsiBuffer txt);
-}
-
-public unsafe interface ICvar : ICppClass
-{
-	[CppMethodFromSigScan(ArchitectureOS.Win32, "vstdlib", "55 8B EC 51 53 57 8B 7D 08 8B D9 8B CF 8B 07 8B")]
-	public unsafe void RegisterConCommand(ConCommandBase txt);
-	[CppMethodFromSigScan(ArchitectureOS.Win32, "vstdlib", "55 8B EC A1 B4 27 ?? ?? 56 8B F1 A8 01 75 2D")]
-	public unsafe void* FindVar(AnsiBuffer var_name);
-}
-
-public unsafe interface ConCommandBase : ICppClass
-{
-
-}
 
 internal unsafe class LoadModules : IImplementsDetours
 {

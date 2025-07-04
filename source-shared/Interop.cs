@@ -101,9 +101,9 @@ public class CppMethodFromVTOffsetAttribute(int offset) : Attribute
 /// </summary>
 /// <param name="offset"></param>
 [AttributeUsage(AttributeTargets.Method)]
-public class CppMethodFromSigScanAttribute(ArchitectureOS arch, string dll, string sig) : Attribute
+public class CppMethodFromSigScanAttribute(OperatingFlags arch, string dll, string sig) : Attribute
 {
-	public ArchitectureOS Architecture => arch;
+	public OperatingFlags Architecture => arch;
 	public string DLL => dll;
 	byte?[]? sigscan;
 	public byte?[] Signature {

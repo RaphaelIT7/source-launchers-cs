@@ -107,10 +107,10 @@ public unsafe static class DetourManager
 			var instance = (IImplementsDetours)Activator.CreateInstance(implType)!;
 			implementors.Add(instance);
 			switch (Main.Program.Architecture) {
-				case ArchitectureOS.Win32: instance.SetupWin32(engine); break;
-				case ArchitectureOS.Win64: instance.SetupWin64(engine); break;
-				case ArchitectureOS.Linux32: instance.SetupLinux32(engine); break;
-				case ArchitectureOS.Linux64: instance.SetupLinux64(engine); break;
+				case OperatingFlags.Win32: instance.SetupWin32(engine); break;
+				case OperatingFlags.Win64: instance.SetupWin64(engine); break;
+				case OperatingFlags.Linux32: instance.SetupLinux32(engine); break;
+				case OperatingFlags.Linux64: instance.SetupLinux64(engine); break;
 			}
 			if (!WasSupported()) {
 				throw new NotImplementedException($"The detour-class '{implType.FullName ?? implType.Name}' did not implement Setup{Main.Program.Architecture}.");

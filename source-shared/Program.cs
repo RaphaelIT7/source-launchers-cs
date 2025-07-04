@@ -10,15 +10,30 @@ using System.Threading.Tasks;
 
 namespace Source.Main;
 
+/// <summary>
+/// <code>
+/// 0 0 0 0   0 0 0 0  
+/// ^^^^^^^   ^^^^^^^  
+/// ^^^^^^^   ^^^^^^^  
+/// ^^^^^^^   ^^^^^^^  
+/// ^^^^^^^   Op. Sys  
+/// CPU architecture   
+/// ^ ^       ^ ^ ^    
+/// ^ ^       ^ ^ ^    
+/// ^ ^       ^ ^ Linux
+/// ^ x64     ^ OSX
+/// x86       Windows 
+/// </code>
+/// </summary>
 [Flags]
-public enum ArchitectureOS : ushort
+public enum OperatingFlags : ushort
 {
 	x86 = 1 << 0,
 	x64 = 1 << 1,
 
-	Windows = 1 << 8,
-	OSX = 1 << 9,
-	Linux = 1 << 10,
+	Windows = 1 << 4,
+	OSX = 1 << 5,
+	Linux = 1 << 6,
 
 	Win32 = x86 | Windows,
 	Win64 = x64 | Windows,
@@ -30,10 +45,10 @@ public static partial class Program
 {
 
 	public static string CommandLine;
-	public static ArchitectureOS Architecture;
-	public static bool IsX64 => (Architecture & ArchitectureOS.x64) == ArchitectureOS.x64;
-	public static ArchitectureOS CPU => Architecture & (ArchitectureOS)0x00FF;
-	public static ArchitectureOS Platform => Architecture & (ArchitectureOS)0xFF00;
+	public static OperatingFlags Architecture;
+	public static bool IsX64 => (Architecture & OperatingFlags.x64) == OperatingFlags.x64;
+	public static OperatingFlags CPU => Architecture & (OperatingFlags)0x00FF;
+	public static OperatingFlags Platform => Architecture & (OperatingFlags)0xFF00;
 	public static IntPtr Instance;
 	public static string Bin;
 
@@ -41,7 +56,7 @@ public static partial class Program
 
 	public static IntPtr LoadModule(string name) {
 		switch (Platform) {
-			case ArchitectureOS.Windows: {
+			case OperatingFlags.Windows: {
 					string realPath = GetModulePath(name);
 					if (!File.Exists(realPath))
 						throw new FileNotFoundException($"DLL '{name}' missing? We tried looking here: {realPath}");
@@ -59,7 +74,7 @@ public static partial class Program
 
 	public static IntPtr GetProcAddress(nint module, string name) {
 		switch (Platform) {
-			case ArchitectureOS.Windows:
+			case OperatingFlags.Windows:
 				return Win32.GetProcAddress(module, name);
 			default:
 				throw new PlatformNotSupportedException();
@@ -79,15 +94,15 @@ public static partial class Program
 
 
 		Architecture = IntPtr.Size switch {
-			8 => ArchitectureOS.x64,
-			4 => ArchitectureOS.x86,
+			8 => OperatingFlags.x64,
+			4 => OperatingFlags.x86,
 			_ => throw new PlatformNotSupportedException("You're not running on a 32-bit or 64-bit machine, somehow, or something went terribly wrong.")
 		};
 
 		if (OperatingSystem.IsWindows())
-			Architecture |= ArchitectureOS.Windows;
+			Architecture |= OperatingFlags.Windows;
 		else if (OperatingSystem.IsLinux())
-			Architecture |= ArchitectureOS.Linux;
+			Architecture |= OperatingFlags.Linux;
 		else
 			throw new PlatformNotSupportedException("You're not running on a Windows or Linux platform.");
 
