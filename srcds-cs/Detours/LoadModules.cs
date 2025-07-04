@@ -25,7 +25,7 @@ internal unsafe class LoadModules : IImplementsDetours
 		CSys sys = MarshalCpp.Cast<CSys>(self);
 		sys.ConsoleOutput("Hello from .NET land!");
 
-		ICvar cvar = Source.Engine.CreateInterface<ICvar>("vstdlib.dll", CVAR_INTERFACE_VERSION)!;
+		ICvar cvar = Source.Engine.CreateInterface<ICvar>("vstdlib", CVAR_INTERFACE_VERSION)!;
 		ConCommandBase ccmd = MarshalCpp.New<ConCommandBase>();
 		cvar.RegisterConCommand(ccmd);
 

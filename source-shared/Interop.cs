@@ -33,7 +33,7 @@ public readonly ref struct AnsiBuffer
 /// <br/>
 /// If allocated by C++ and interop is from unmanaged -> managed, then use <see cref="MarshalCpp.Cast{T}(nint)"/> to cast the C++ reference to a dynamic interface object.
 /// <br/>
-/// If you're trying to create an instance of the class that can be passed to C++, use <see cref="MarshalCpp.New{T}()"/>. Note that if in C#, T is expected to be a struct and the return value is T*
+/// If you're trying to create an instance of the class that can be passed to C++, use <see cref="MarshalCpp.New{T}()"/>. Note that if created by C#, it must be manually freed via Dispose() since CppClass interfaces allocate to unmanaged hglobals and interface similarly to how you'd interface with a C++ class.
 /// </summary>
 public interface ICppClass : IDisposable
 {
@@ -122,7 +122,7 @@ public static unsafe class MarshalCpp
 	private static ModuleBuilder? DynCppInterfaceFactory;
 
 	public static T New<T>() where T : ICppClass {
-		void* ptr = (void*)Marshal.AllocHGlobal(100);
+		void* ptr = Tier0.Plat_Alloc(100);
 		var generatedType = GetOrCreateDynamicCppType(typeof(T), ptr);
 		return (T)Activator.CreateInstance(generatedType, [(nint)ptr])!;
 	}
@@ -592,6 +592,9 @@ public static unsafe partial class Tier0
 	// also do this for vstdlib detour attributes
 	#region Shared Tier0 Exports
 	[DllImport(dllname)] public static extern void Plat_MessageBox([MarshalAs(utf8)] string title, [MarshalAs(utf8)] string message);
+	[DllImport(dllname)] public static extern void* Plat_Alloc(ulong size);
+	[DllImport(dllname)] public static extern void* Plat_Realloc(void* ptr, ulong size);
+	[DllImport(dllname)] public static extern void Plat_Free(void* ptr);
 	#endregion
 
 #if !CSTRIKE_TIER0
@@ -604,6 +607,8 @@ public static unsafe partial class Tier0
 		pDay = day;
 		pMonth = month;
 		pYear = year;
+
+		
 	}
 	[DllImport(dllname)] public static extern void Msg([MarshalAs(utf8)] string msg);
 	[DllImport(dllname)] public static extern void DevMsg([MarshalAs(utf8)] string msg);
