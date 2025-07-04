@@ -12,17 +12,17 @@ namespace Source.Main;
 
 /// <summary>
 /// <code>
-/// 0 0 0 0   0 0 0 0  
-/// ^^^^^^^   ^^^^^^^  
-/// ^^^^^^^   ^^^^^^^  
-/// ^^^^^^^   ^^^^^^^  
-/// ^^^^^^^   Op. Sys  
-/// CPU architecture   
-/// ^ ^       ^ ^ ^    
-/// ^ ^       ^ ^ ^    
-/// ^ ^       ^ ^ Linux
-/// ^ x64     ^ OSX
-/// x86       Windows 
+/// 0 0 0 0 0 0 0 0    0 0 0 0 0 0 0 0
+/// ^^^^^^^            ^^^^^^^  
+/// ^^^^^^^            ^^^^^^^  
+/// ^^^^^^^            ^^^^^^^  
+/// ^^^^^^^            ^^^^^^^
+/// CPU architecture   Op. Sys  
+/// ^ ^                ^ ^ ^    
+/// ^ ^                ^ ^ ^    
+/// ^ ^                ^ ^ Linux
+/// ^ x64              ^ OSX
+/// x86                Windows 
 /// </code>
 /// </summary>
 [Flags]
@@ -31,9 +31,9 @@ public enum OperatingFlags : ushort
 	x86 = 1 << 0,
 	x64 = 1 << 1,
 
-	Windows = 1 << 4,
-	OSX = 1 << 5,
-	Linux = 1 << 6,
+	Windows = 1 << 8,
+	OSX = 1 << 9,
+	Linux = 1 << 10,
 
 	Win32 = x86 | Windows,
 	Win64 = x64 | Windows,
