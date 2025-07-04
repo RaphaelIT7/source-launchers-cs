@@ -19,6 +19,9 @@
 		<Compile Include="..\source-shared\MinHook\SharpDisasm\Udis86\*.cs" Link="Shared\MinHook\SharpDisasm\Udis86\%(Filename)%(Extension)" />
 	</ItemGroup>
 
+	<PropertyGroup>
+		<DefineConstants>$(DefineConstants);BUILD_GMOD</DefineConstants>
+	</PropertyGroup>
 	<Import Project="UserSpecific.props" />
-
+	
 </Project>

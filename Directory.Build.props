@@ -16,8 +16,4 @@
 	<PropertyGroup Condition="'$(IsLinux)'=='true'">
 		<DefineConstants>$(DefineConstants);_LINUX</DefineConstants>
 	</PropertyGroup>
-	
-	<PropertyGroup>
-		<DefineConstants>$(DefineConstants);CSTRIKE_TIER0;BUILD_GMOD</DefineConstants>
-	</PropertyGroup>
 </Project>

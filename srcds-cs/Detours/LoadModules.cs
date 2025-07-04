@@ -32,8 +32,6 @@ public unsafe interface ConCommandBase : ICppClass
 
 }
 
-
-
 internal unsafe class LoadModules : IImplementsDetours
 {
 	[UnmanagedFunctionPointer(CallingConvention.ThisCall)]
