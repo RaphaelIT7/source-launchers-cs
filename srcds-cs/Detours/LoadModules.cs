@@ -16,18 +16,14 @@ namespace srcds_cs.Detours;
 public interface CSys : ICppClass
 {
 	[CppMethodFromVTOffset(11)]
-	[CppMethodSelfPtr(false)] 
 	public unsafe void ConsoleOutput(AnsiBuffer txt);
 }
 
 public unsafe interface ICvar : ICppClass
 {
 	[CppMethodFromSigScan(ArchitectureOS.Win32, "vstdlib", "55 8B EC 51 53 57 8B 7D 08 8B D9 8B CF 8B 07 8B")]
-	[CppMethodSelfPtr(true)]
 	public unsafe void RegisterConCommand(ConCommandBase txt);
-
 	[CppMethodFromSigScan(ArchitectureOS.Win32, "vstdlib", "55 8B EC A1 B4 27 ?? ?? 56 8B F1 A8 01 75 2D")]
-	[CppMethodSelfPtr(true)]
 	public unsafe void* FindVar(AnsiBuffer var_name);
 }
 
@@ -49,14 +45,15 @@ internal unsafe class LoadModules : IImplementsDetours
 		CSys sys = MarshalCpp.Cast<CSys>(self);
 		sys.ConsoleOutput("Hello from .NET land!");
 
+		ICvar cvar = Source.Engine.CreateInterface<ICvar>("vstdlib.dll", CVAR_INTERFACE_VERSION)!;
+		ConCommandBase ccmd = MarshalCpp.New<ConCommandBase>();
+		cvar.RegisterConCommand(ccmd);
+
 		return true;
 	}
 
 	public void SetupWin32(HookEngine engine) {
 		CSys_LoadModules_Original = engine.AddDetour<CSys_LoadModules>("dedicated.dll", [0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x60, 0x56, 0x8B], new(CSys_LoadModules_Detour));
-
-		ICvar cvar = Source.Engine.CreateInterface<ICvar>("vstdlib.dll", CVAR_INTERFACE_VERSION)!;
-		void* test = cvar.FindVar("sv_cheats"); // pulling a cvar out of my ass cause I can't find the signature for anything else rn
 	}
 
 	public const string CVAR_INTERFACE_VERSION = "VEngineCvar004";

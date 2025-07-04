@@ -302,6 +302,22 @@ public static unsafe class MarshalCpp
 			PropertyInfo interfaceProp = typeof(ICppClass).GetProperty("ReadOnly")!;
 			typeBuilder.DefineMethodOverride(readOnlyGetterMethod, interfaceProp.GetMethod!);
 		}
+		// Cast the typeBuilder dynamic type to nint
+		{
+			MethodBuilder implicitOp = typeBuilder.DefineMethod(
+				"op_Implicit",
+				MethodAttributes.Public | MethodAttributes.Static | MethodAttributes.SpecialName | MethodAttributes.HideBySig,
+				typeof(nint),         
+				new[] { typeBuilder }
+			);
+			// Mark as 'implicit operator'
+
+			ILGenerator il = implicitOp.GetILGenerator();
+
+			il.Emit(OpCodes.Ldarg_0);                     
+			il.Emit(OpCodes.Ldfld, pointerField);      
+			il.Emit(OpCodes.Ret);
+		}
 		// Define the constructor
 		{
 			ConstructorBuilder ctorBuilder = typeBuilder.DefineConstructor(
@@ -337,9 +353,8 @@ public static unsafe class MarshalCpp
 			);
 
 			ILGenerator il = disposeMethod.GetILGenerator();
-			il.Emit(OpCodes.Ret); // Just return immediately — no-op
+			il.Emit(OpCodes.Ret);
 
-			// Implement IDisposable.Dispose
 			typeBuilder.DefineMethodOverride(disposeMethod, typeof(IDisposable).GetMethod("Dispose")!);
 		}
 
@@ -409,6 +424,11 @@ public static unsafe class MarshalCpp
 				else if (!expectedNativeType.IsValueType && !providedManagedType.IsValueType)
 					// Reference type cast
 					il.Emit(OpCodes.Castclass, expectedNativeType);
+				else if(providedManagedType.IsAssignableTo(typeof(ICppClass)) && expectedNativeType == typeof(nint)) {
+					var prop = typeof(ICppClass).GetProperty("Pointer");
+					var getter = prop!.GetGetMethod();
+					il.Emit(OpCodes.Callvirt, getter);
+				}
 				else if (expectedNativeType.IsValueType && !providedManagedType.IsValueType)
 					// Unbox to value type
 					il.Emit(OpCodes.Unbox_Any, expectedNativeType);

@@ -17,11 +17,6 @@ internal class DetourConClearF : IImplementsDetours
 		ConClearF_Original!();
 		Console.Clear();
 		Console.CursorTop = 1;
-
-		// Does this work?
-		var cvar = Source.Engine.CreateInterface<ICvar>("vstdlib.dll", LoadModules.CVAR_INTERFACE_VERSION)!;
-		void* test = cvar.FindVar("deathmatch"); // pulling a cvar out of my ass cause I can't find the signature for anything else rn
-		Tier0.Msg($"test: {(nint)test:X}\n");
 	}
 
 	public void SetupWin32(HookEngine engine) {
