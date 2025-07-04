@@ -9,17 +9,27 @@ using Source.Main;
 using System.Reflection.Metadata.Ecma335;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
+using System.Diagnostics.Metrics;
 
 namespace Source;
+
+// TODO: should this stuff use tier0 allocs
 
 public readonly ref struct AnsiBuffer
 {
 	private readonly nint ptr;
-	public AnsiBuffer(string? text) => ptr = Marshal.StringToHGlobalAnsi(text);
+
+	public AnsiBuffer(string? text) {
+		ptr = Marshal.StringToHGlobalAnsi(text);
+	}
+
 	public unsafe AnsiBuffer(void* text) => ptr = (nint)text;
 	public unsafe AnsiBuffer(nint text) => ptr = text;
 	public unsafe sbyte* AsPointer() => (sbyte*)ptr.ToPointer();
-	public void Dispose() => Marshal.FreeHGlobal(ptr);
+	public unsafe nint AsNativeInt() => ptr;
+	public void Dispose() {
+		Marshal.FreeHGlobal(ptr);
+	}
 	public static unsafe implicit operator sbyte*(AnsiBuffer buffer) => buffer.AsPointer();
 	public static unsafe implicit operator AnsiBuffer(string text) => new(text);
 	public static unsafe string? ToManaged(void* ptr) => Marshal.PtrToStringAnsi(new(ptr));
@@ -86,6 +96,26 @@ public class CppMethodFromSigScanAttribute(OperatingFlags arch, string dll, stri
 }
 
 /// <summary>
+/// Defines a single C++ field via an interface property.
+/// <br/>
+/// The <paramref name="fieldIndex"/> refers to a 0-based /// index (0, 1, 2, 3, 4, ...) of the field. 
+/// <br/>
+/// During dynamic assembly, the list of properties is filtered by those that have a CppFieldAttribute, 
+/// sorted by <see cref="FieldIndex"/>. Then the properties are checked to ensure no gaps between indices. 
+/// <br/>
+/// Finally, each property is counted in order, with an internal tracker for the actual field offset 
+/// (based on property type). The final allocation size is then pushed into a constant in the type (ie. 
+/// <c>public const nuint RESERVED_ALLOCATION_SIZE = FINAL ALLOCATION SIZE</c>).
+/// </summary>
+/// <param name="fieldIndex"></param>
+[AttributeUsage(AttributeTargets.Property)]
+public class CppFieldAttribute(int fieldIndex) : Attribute
+{
+	public int FieldIndex => fieldIndex;
+}
+
+
+/// <summary>
 /// Marks if the vtable method has a void* self pointer in its C++ signature. If not, it is excluded from the dynamic generation.
 /// The default is that the generator generates it. So be specific if this isn't the case.
 /// </summary>
@@ -117,19 +147,252 @@ public static unsafe class MarshalCpp
 		public nint Delegate;
 	}
 
-	private static Dictionary<Type, Type> intTypeToDynType = [];
+	// Interface Type -> Dynamic Type Flags -> Emitted Dynamic Type
+	private static Dictionary<Type, Dictionary<DynamicTypeFlags, Type>> intTypeToDynType = [];
+	// Interface implementation -> constructor builder. Hacky solution but it will do
+	private static Dictionary<Type, ConstructorInfo> constructors = [];
+	// The dynamic MSIL assemblers
 	private static AssemblyBuilder? DynAssembly;
 	private static ModuleBuilder? DynCppInterfaceFactory;
 
 	public static T New<T>() where T : ICppClass {
+		// We need to generate the type to know how much space it takes for allocation.
+		var generatedType = GetOrCreateDynamicCppType(typeof(T), DynamicTypeFlags.HandleFromCSharpAllocation, null);
+		nuint totalSize = (nuint)generatedType.GetField("RESERVED_ALLOCATION_SIZE", BindingFlags.Public | BindingFlags.Static)!.GetValue(null)!;
 		void* ptr = Tier0.Plat_Alloc(100);
-		var generatedType = GetOrCreateDynamicCppType(typeof(T), ptr);
 		return (T)Activator.CreateInstance(generatedType, [(nint)ptr])!;
 	}
 
-	private static Type GetOrCreateDynamicCppType(Type interfaceType, void* ptr) {
-		if (intTypeToDynType.TryGetValue(interfaceType, out Type? generatedType))
-			return generatedType;
+	/// <summary>
+	/// Determines some internal class behavior.
+	/// 0 0 0 0 0 0 0 0
+	/// ^
+	/// ^
+	/// ^
+	/// ^
+	/// ^
+	/// ^
+	/// ^
+	/// ^------------------ If the handle came from C++/unknown territory or if it 100% came from C#
+	/// </summary>
+	public enum DynamicTypeFlags : byte
+	{
+		/// <summary>
+		/// The ICppClass instance was instantiated via a pointer that came from C++. Regardless
+		/// of if it was allocated by C# or not, if it was pulled from C++ or a non-100% C# pointer,
+		/// the interface will represent a readonly, unfreeable pointer. In most cases, the ICppClass
+		/// instance was likely instantiated via <see cref="MarshalCpp.Cast{T}(nint)"/> or <see cref="MarshalCpp.Cast{T}(void*)"/>.
+		/// <br/>
+		/// <br/>  - <see cref="IDisposable.Dispose"/> will perform no operation.
+		/// <br/>  - <see cref="ICppClass.Pointer"/> is read only.
+		/// </summary>
+		HandleFromPointer = 0,
+		/// <summary>
+		/// The ICppClass instance was instantiated via <see cref="MarshalCpp.New{T}"/>. Given this flag,
+		/// the class knows it is freeable without as many consequences to invalid operations, and therefore the pointer
+		/// can be freed. <b>It is up to your judgement on if the pointer can truly be freed or not without consequences, 
+		/// and the pointer will not be freed by deconstructors.</b> This is because the class instance may be used by 
+		/// C++ over the total lifetime of the program. To free it, you must use Dispose() manually or use it within a using statement.
+		/// <br/>
+		/// <br/> - <see cref="IDisposable.Dispose"/> will perform <see cref="Tier0.Plat_Free(void*)"/> on <see cref="ICppClass.Pointer"/>.
+		/// <br/> - <see cref="ICppClass.Pointer"/> is read only.
+		/// </summary>
+		HandleFromCSharpAllocation = 1
+	}
+
+	/// <summary>
+	/// Determines the ICppClass hashcode. Likely implemented by the dynamic type (ie. the dyntype
+	/// should insert this method call into its implementation)
+	/// </summary>
+	public static int CppClassHashcode(ICppClass self) => HashCode.Combine(self.Pointer);
+	/// <summary>
+	/// Determines ICppClass equality. Likely implemented by the dynamic type (ie. the dyntype
+	/// should insert this method call into its implementation)
+	/// </summary>
+	public static bool CppClassEquals(ICppClass? a, ICppClass? b) {
+		if ((a == null || a.Pointer == 0) && (b == null || b.Pointer == 0)) return true;
+		return a.Pointer == b.Pointer;
+	}
+
+	// pointerField is so we can reach into _pointer for this
+	// pointerProperty is so we can reach into _pointer for non-this but still ICppClass
+	// fieldOffset is the offset calculated by the assembler
+	// builder is the builder that the dynamic assembler produces
+
+	delegate nuint DynamicCppFieldFactory(
+		FieldBuilder pointerField, PropertyInfo pointerProperty, nuint fieldOffset,
+		PropertyInfo fieldProperty, ILGenerator getter, ILGenerator setter
+	);
+
+	static void PointerMathIL(FieldBuilder pointerField, ILGenerator il, nuint fieldOffset) {
+		il.Emit(OpCodes.Ldarg_0);
+		il.Emit(OpCodes.Ldfld, pointerField);
+		if (fieldOffset != 0) {
+			il.Emit(OpCodes.Ldc_I8, (long)fieldOffset);
+			il.Emit(OpCodes.Conv_I);
+			il.Emit(OpCodes.Add);
+		}
+	}
+
+	/// <summary>
+	/// <c>[typeof(<see cref="nint"/>)]</c>
+	/// </summary>
+	static readonly Type[] ICppClassConstructorTypes = [typeof(nint)];
+
+	static nuint ManagedCppClassInterfaceFactory(
+		FieldBuilder pointerField, PropertyInfo pointerProperty, nuint fieldOffset,
+		PropertyInfo fieldProperty, ILGenerator getter, ILGenerator setter
+	) {
+		nuint fieldSize = (nuint)sizeof(nint);
+
+		// Getter
+		{
+			PointerMathIL(pointerField, getter, fieldOffset);
+			getter.Emit(OpCodes.Ldobj, typeof(nint));
+
+			// Instantiate a type of fieldProperty.PropertyType, with a single nint argument (which would be the value loaded by Ldobj)
+			Type t = GetOrCreateDynamicCppType(fieldProperty.PropertyType, DynamicTypeFlags.HandleFromPointer, null);
+			ConstructorInfo ctor = constructors[t];
+
+			getter.Emit(OpCodes.Newobj, ctor);
+			getter.Emit(OpCodes.Ret);
+		}
+
+		// Setter
+		{
+			PointerMathIL(pointerField, setter, fieldOffset);
+			setter.Emit(OpCodes.Ldarg_1);
+			// We need to take the Pointer property (pointerProperty) from the ICppClass loaded by Ldarg_1,
+			// and push that to the stack, to then be stored by Stobj.
+			setter.Emit(OpCodes.Callvirt, pointerProperty.GetMethod!);
+
+			setter.Emit(OpCodes.Stobj, typeof(nint));
+			setter.Emit(OpCodes.Ret);
+		}
+
+		return fieldSize;
+	}
+
+	static nuint UnmanagedTypeFieldFactory<T>(
+		FieldBuilder pointerField, PropertyInfo pointerProperty, nuint fieldOffset,
+		PropertyInfo fieldProperty, ILGenerator getter, ILGenerator setter
+	) where T : unmanaged {
+		nuint fieldSize = (nuint)sizeof(T);
+
+		// pointerField is an nint representing an unmanaged memory pointer.
+		// Getter is defined to read from this pointer, given fieldOffset as an offset to the pointer, and return it as T.
+		// Setter is defined vice versa - write T to pointer + offset.
+		// PointerMathIL will do (ptr + offset), then Ldobj/Stobj get T from memory/place T into memory respectively
+
+		// Getter
+		{
+			PointerMathIL(pointerField, getter, fieldOffset);
+			getter.Emit(OpCodes.Ldobj, typeof(T));
+			getter.Emit(OpCodes.Ret);
+		}
+		// Setter
+		{
+			PointerMathIL(pointerField, setter, fieldOffset);
+			setter.Emit(OpCodes.Ldarg_1);
+			setter.Emit(OpCodes.Stobj, typeof(T));
+			setter.Emit(OpCodes.Ret);
+		}
+
+		return fieldSize;
+	}
+
+
+	static nuint AnsiBufferFactory(
+		FieldBuilder pointerField, PropertyInfo pointerProperty, nuint fieldOffset,
+		PropertyInfo fieldProperty, ILGenerator getter, ILGenerator setter
+	) {
+		nuint fieldSize = (nuint)sizeof(nint);
+
+		// Getter
+		{
+			PointerMathIL(pointerField, getter, fieldOffset);
+			getter.Emit(OpCodes.Ldobj, typeof(nint));
+			ConstructorInfo ctor = typeof(AnsiBuffer).GetConstructor(ICppClassConstructorTypes)!;
+			getter.Emit(OpCodes.Newobj, ctor);
+			getter.Emit(OpCodes.Ret);
+		}
+
+		// Setter
+		{
+			PointerMathIL(pointerField, setter, fieldOffset);
+			setter.Emit(OpCodes.Ldarg_1);
+			setter.Emit(OpCodes.Callvirt, typeof(AnsiBuffer).GetMethod("AsNativeInt")!);
+
+			setter.Emit(OpCodes.Stobj, typeof(nint));
+			setter.Emit(OpCodes.Ret);
+		}
+
+		return fieldSize;
+	}
+
+	static Dictionary<Type, DynamicCppFieldFactory> Generators = new() {
+		{ typeof(bool),     UnmanagedTypeFieldFactory<bool> },
+
+		{ typeof(sbyte),     UnmanagedTypeFieldFactory<sbyte> },
+		{ typeof(short),     UnmanagedTypeFieldFactory<short> },
+		{ typeof(int),       UnmanagedTypeFieldFactory<int> },
+		{ typeof(long),      UnmanagedTypeFieldFactory<long> },
+
+		{ typeof(byte),      UnmanagedTypeFieldFactory<byte> },
+		{ typeof(ushort),    UnmanagedTypeFieldFactory<ushort> },
+		{ typeof(uint),      UnmanagedTypeFieldFactory<uint> },
+		{ typeof(ulong),     UnmanagedTypeFieldFactory<ulong> },
+
+		{ typeof(float),     UnmanagedTypeFieldFactory<float> },
+		{ typeof(double),    UnmanagedTypeFieldFactory<double> },
+
+		{ typeof(nint),      UnmanagedTypeFieldFactory<nint> },
+		{ typeof(nuint),     UnmanagedTypeFieldFactory<nuint> },
+
+		{ typeof(ICppClass), ManagedCppClassInterfaceFactory },
+		{ typeof(AnsiBuffer), AnsiBufferFactory },
+	};
+
+	private static bool resolveType(Type t, [NotNullWhen(true)] out DynamicCppFieldFactory? gen) {
+		return Generators.TryGetValue(t, out gen);
+	}
+
+	public static bool IsValidCppMethod(MethodInfo x) {
+		return
+			x.GetCustomAttribute<CppMethodFromVTOffsetAttribute>() != null
+			|| x.GetCustomAttribute<CppMethodFromSigScanAttribute>() != null;
+	}
+
+	public static bool IsValidCppField(PropertyInfo x) {
+		return x.GetCustomAttribute<CppFieldAttribute>() != null;
+	}
+
+	public static void PreventCppFieldGaps(IEnumerable<PropertyInfo> fields) {
+		int lastIndex = -1;
+		int index = 0;
+		PropertyInfo? lastField = null;
+		foreach (PropertyInfo x in fields) {
+			var propIndex = x.GetCustomAttribute<CppFieldAttribute>()!.FieldIndex;
+			if (propIndex != index)
+				throw new IndexOutOfRangeException($"MarshalCpp dynamic factory failed to ensure field order. This matters due to how sizing influences offsets.\n\nThe two offenders were:\n{lastField?.Name ?? "<start>"} [{lastIndex}] -> {x.Name} [{propIndex}]");
+			lastIndex = index;
+			index = propIndex + 1;
+			lastField = x;
+		}
+	}
+	public static int CppFieldIndexSorter(PropertyInfo x) => x.GetCustomAttribute<CppFieldAttribute>()!.FieldIndex;
+
+	private static Type GetOrCreateDynamicCppType(Type interfaceType, DynamicTypeFlags flags, void* ptr) {
+		Type? finalType = null;
+		if (intTypeToDynType.TryGetValue(interfaceType, out var generatedTypes)) {
+			if (generatedTypes.TryGetValue(flags, out finalType))
+				return finalType;
+		}
+		else {
+			generatedTypes = [];
+			intTypeToDynType[interfaceType] = generatedTypes;
+		}
+
 		if (!interfaceType.IsInterface)
 			throw new InvalidOperationException($"typeof(T) == {interfaceType.FullName ?? interfaceType.Name} - was not interface. Cast expects an interface, which it then dynamically creates an object implementing the interface, with methods pointing towards C++ vtable pointers");
 
@@ -148,74 +411,48 @@ public static unsafe class MarshalCpp
 
 		ModuleBuilder dynModule = DynCppInterfaceFactory;
 
-		string typeName = "Dynamic" + interfaceType.Name;
+		string typeName = $"MarshalCpp_Dynamic{interfaceType.Name}_{flags}";
 		TypeBuilder typeBuilder = dynModule.DefineType(typeName, TypeAttributes.Public, null, [interfaceType]);
+		intTypeToDynType[interfaceType][flags] = typeBuilder; // TEMPORARILY store this so things don't die
 
-		MethodInfo[] methods = interfaceType.GetMethods();
+		// This is the pointer field to the C++ class. The Pointer property on an ICppClass is backed by this field.
+		// We declare this as soon as possible to use it in IL instructions later on the road
 		FieldBuilder pointerField = typeBuilder.DefineField("_pointer", typeof(nint), FieldAttributes.Private);
-		foreach (var method in methods) {
-			int? vtableOffsetN = method.GetCustomAttribute<CppMethodFromVTOffsetAttribute>()?.Offset;
-			bool vt_useSelfPtr = method.GetCustomAttribute<CppMethodSelfPtrAttribute>()?.HasSelfPointer ?? true;
-
-			nint cppMethod;
-			if (vtableOffsetN == null) {
-				var sigAttr = method.GetCustomAttributes<CppMethodFromSigScanAttribute>().Where(x => x.Architecture == Program.Architecture).FirstOrDefault();
-				if (sigAttr == null) {
-					genInterfaceStub(typeBuilder, method);
-					continue;
-				}
-
-				cppMethod = (int)Scanning.ScanModuleProc32(sigAttr.DLL, sigAttr.Signature);
-			}
-			else {
-				nint vtablePtr = *(nint*)ptr;
-				nint* vtable = (nint*)vtablePtr;
-
-				int vt_offset = vtableOffsetN.Value;
-
-				cppMethod = vtable[vt_offset];
-			}
-
-			// Generate the delegate type
-			int typeIndex = 0;
-			int pTypeIndex = 0;
-			ParameterInfo[] parameters = method.GetParameters();
-
-			// Allocate Type[] with length of Parameters + SelfPtr (if needed) + 1 for return type since
-			// this builds the managed delegate type
-			Type[] types = new Type[parameters.Length + (vt_useSelfPtr ? 1 : 0) + 1];
-			Type[] justParams = new Type[parameters.Length + (vt_useSelfPtr ? 1 : 0)];
-			// Some calls don't take in a void*. I believe this is a compiler optimization that discards unused parameters?
-			// Entirely guessing but regardless theres not a good enough way to automatically discern it hence this
-			if (vt_useSelfPtr) {
-				pushArray(typeof(nint), types, ref typeIndex);
-				pushArray(typeof(nint), justParams, ref pTypeIndex);
-			}
-
-			// Figure out how to marshal any other types in the parameter list.
-			foreach (ParameterInfo param in parameters) {
-				pushArray(getMarshalType(param), types, ref typeIndex);
-				pushArray(getMarshalType(param), justParams, ref pTypeIndex);
-			}
-
-			// The return type is always at the end of the delegate, even if void
-			// Since the return of a method is also a ParameterInfo that can be passed into getMarshalType again
-			// rather than be reused
-			pushArray(getMarshalType(method.ReturnParameter), types, ref typeIndex);
-
-			// Rewrite the dynamic object's method so it implements the interface as expected
-			genInterfaceNative(typeBuilder, method, types, cppMethod, pointerField, vt_useSelfPtr);
-		}
-		// Setup Pointer. Since this comes from C++ land lets not let the user change it without throwing
-		{
-
-			PropertyBuilder pointerBuilder = typeBuilder.DefineProperty(
+		// Do the same as above for pointerProperty for the same reasons
+		PropertyBuilder pointerProperty = typeBuilder.DefineProperty(
 				"Pointer",
 				PropertyAttributes.None,
 				typeof(nint),
 				null
 			);
 
+		// Define the constructor, for similar reasons - mostly type referencing dynamic type hell
+		{
+			ConstructorBuilder ctorBuilder = typeBuilder.DefineConstructor(
+				MethodAttributes.Public,
+				CallingConventions.Standard,
+				[typeof(nint)] // single pointer constructor param
+			);
+
+			ILGenerator il = ctorBuilder.GetILGenerator();
+
+			// Call base constructor: base..ctor()
+			il.Emit(OpCodes.Ldarg_0); // Load "this"
+			ConstructorInfo objectCtor = typeof(object).GetConstructor(Type.EmptyTypes)!;
+			il.Emit(OpCodes.Call, objectCtor);
+
+			il.Emit(OpCodes.Ldarg_0);
+			il.Emit(OpCodes.Ldarg_1);
+			FieldInfo ptrField = pointerField;
+			il.Emit(OpCodes.Stfld, ptrField);
+
+			il.Emit(OpCodes.Ret);
+
+			constructors[typeBuilder] = ctorBuilder;
+		}
+
+		// Setup Pointer. Since this comes from C++ land lets not let the user change it without throwing
+		{
 			MethodBuilder getterMethod = typeBuilder.DefineMethod(
 				"get_Pointer",
 				MethodAttributes.Public | MethodAttributes.Virtual | MethodAttributes.SpecialName | MethodAttributes.HideBySig,
@@ -238,8 +475,8 @@ public static unsafe class MarshalCpp
 			setterIL.Emit(OpCodes.Newobj, typeof(InvalidOperationException).GetConstructor(new[] { typeof(string) })!);
 			setterIL.Emit(OpCodes.Throw);
 
-			pointerBuilder.SetGetMethod(getterMethod);
-			pointerBuilder.SetSetMethod(setterMethod);
+			pointerProperty.SetGetMethod(getterMethod);
+			pointerProperty.SetSetMethod(setterMethod);
 
 			PropertyInfo interfaceProp = typeof(ICppClass).GetProperty("Pointer")!;
 			typeBuilder.DefineMethodOverride(getterMethod, interfaceProp.GetMethod!);
@@ -275,40 +512,17 @@ public static unsafe class MarshalCpp
 			MethodBuilder implicitOp = typeBuilder.DefineMethod(
 				"op_Implicit",
 				MethodAttributes.Public | MethodAttributes.Static | MethodAttributes.SpecialName | MethodAttributes.HideBySig,
-				typeof(nint),         
+				typeof(nint),
 				new[] { typeBuilder }
 			);
 			// Mark as 'implicit operator'
 
 			ILGenerator il = implicitOp.GetILGenerator();
 
-			il.Emit(OpCodes.Ldarg_0);                     
-			il.Emit(OpCodes.Ldfld, pointerField);      
-			il.Emit(OpCodes.Ret);
-		}
-		// Define the constructor
-		{
-			ConstructorBuilder ctorBuilder = typeBuilder.DefineConstructor(
-				MethodAttributes.Public,
-				CallingConventions.Standard,
-				[typeof(nint)] // single pointer constructor param
-			);
-
-			ILGenerator il = ctorBuilder.GetILGenerator();
-
-			// Call base constructor: base..ctor()
-			il.Emit(OpCodes.Ldarg_0); // Load "this"
-			ConstructorInfo objectCtor = typeof(object).GetConstructor(Type.EmptyTypes)!;
-			il.Emit(OpCodes.Call, objectCtor);
-
 			il.Emit(OpCodes.Ldarg_0);
-			il.Emit(OpCodes.Ldarg_1);
-			FieldInfo ptrField = pointerField;
-			il.Emit(OpCodes.Stfld, ptrField);
-
+			il.Emit(OpCodes.Ldfld, pointerField);
 			il.Emit(OpCodes.Ret);
 		}
-
 		// Now trick Dispose() by just doing nothing
 		// I figured it would be better to encourage using semantics rather than
 		// making Dispose() throw an error
@@ -321,20 +535,153 @@ public static unsafe class MarshalCpp
 			);
 
 			ILGenerator il = disposeMethod.GetILGenerator();
+			if (flags.HasFlag(DynamicTypeFlags.HandleFromCSharpAllocation)) {
+				il.Emit(OpCodes.Ldarg_0);
+				il.Emit(OpCodes.Ldfld, pointerField);
+
+				MethodInfo platFree = typeof(Tier0).GetMethod("Plat_Free", BindingFlags.Public | BindingFlags.Static)!;
+				il.Emit(OpCodes.Call, platFree);
+			}
 			il.Emit(OpCodes.Ret);
 
 			typeBuilder.DefineMethodOverride(disposeMethod, typeof(IDisposable).GetMethod("Dispose")!);
 		}
 
-		generatedType = typeBuilder.CreateType();
+		// All fields the interface type implemented via properties with CppField attributes.
+		IEnumerable<PropertyInfo> fields = interfaceType.GetProperties().Where(IsValidCppField).OrderBy(CppFieldIndexSorter);
+		PreventCppFieldGaps(fields);
+		// All methods the interface implemented via CppMethodFrom* attributes.
+		IEnumerable<MethodInfo> methods = interfaceType.GetMethods().Where(IsValidCppMethod);
+		// How much space the New<T> factory reserves in unallocated land
+		nuint allocation_size = 0;
 
-		intTypeToDynType[interfaceType] = generatedType;
-		return generatedType;
+		foreach (var field in fields) {
+			var propertyType = field.PropertyType;
+			DynamicCppFieldFactory? generator = null;
+			if (!resolveType(propertyType, out generator)) {
+				// If ICppClass, use that then
+				if (propertyType.IsAssignableTo(typeof(ICppClass)))
+					resolveType(typeof(ICppClass), out generator);
+			}
+
+			if (generator == null)
+				throw new NotImplementedException($"Unable to resolve property '{field.Name}''s type ({propertyType.FullName ?? propertyType.Name}) to a DynamicCppFieldGenerator. This is either invalid/unimplemented behavior.");
+
+			nuint fieldOffset = allocation_size;
+			allocation_size += ConstructProperty(typeBuilder, generator, pointerField, pointerProperty, field, fieldOffset);
+		}
+
+		FieldBuilder RESERVED_ALLOCATION_SIZE = typeBuilder.DefineField("RESERVED_ALLOCATION_SIZE", typeof(nuint), FieldAttributes.Public | FieldAttributes.Static);
+
+		// define cctor
+		{
+			ConstructorBuilder cctor = typeBuilder.DefineTypeInitializer();
+			ILGenerator il = cctor.GetILGenerator();
+
+			il.Emit(OpCodes.Ldc_I8, (long)allocation_size); 
+			il.Emit(OpCodes.Conv_U);
+			il.Emit(OpCodes.Stsfld, RESERVED_ALLOCATION_SIZE);
+			il.Emit(OpCodes.Ret);
+		}
+
+		foreach (var method in methods) {
+			int? vtableOffsetN = method.GetCustomAttribute<CppMethodFromVTOffsetAttribute>()?.Offset;
+			bool vt_useSelfPtr = method.GetCustomAttribute<CppMethodSelfPtrAttribute>()?.HasSelfPointer ?? true;
+
+			nint cppMethod;
+			if (vtableOffsetN == null) {
+				var sigAttr = method.GetCustomAttributes<CppMethodFromSigScanAttribute>().Where(x => x.Architecture == Program.Architecture).FirstOrDefault();
+				if (sigAttr == null) {
+					genInterfaceStub(typeBuilder, method);
+					continue;
+				}
+
+				cppMethod = (int)Scanning.ScanModuleProc32(sigAttr.DLL, sigAttr.Signature);
+			}
+			else if (ptr != null) {
+				nint vtablePtr = *(nint*)ptr;
+				nint* vtable = (nint*)vtablePtr;
+
+				int vt_offset = vtableOffsetN.Value;
+
+				cppMethod = vtable[vt_offset];
+			}
+			else {
+				genInterfaceStub(typeBuilder, method);
+				continue;
+			}
+
+			// Generate the delegate type
+			int typeIndex = 0;
+			int pTypeIndex = 0;
+			ParameterInfo[] parameters = method.GetParameters();
+
+			// Allocate Type[] with length of Parameters + SelfPtr (if needed) + 1 for return type since
+			// this builds the managed delegate type
+			Type[] types = new Type[parameters.Length + (vt_useSelfPtr ? 1 : 0) + 1];
+			// Some calls don't take in a void*. I believe this is a compiler optimization that discards unused parameters?
+			// Entirely guessing but regardless theres not a good enough way to automatically discern it hence this
+			// TODO: is this even a thing lol. I think I was just having a bad day with IL gen/etc
+			if (vt_useSelfPtr)
+				pushArray(typeof(nint), types, ref typeIndex);
+
+			// Figure out how to marshal any other types in the parameter list.
+			foreach (ParameterInfo param in parameters)
+				pushArray(getMarshalType(param), types, ref typeIndex);
+
+			// The return type is always at the end of the delegate, even if void
+			// Since the return of a method is also a ParameterInfo that can be passed into getMarshalType again
+			// rather than be reused
+			pushArray(getMarshalType(method.ReturnParameter), types, ref typeIndex);
+
+			// Rewrite the dynamic object's method so it implements the interface as expected
+			genInterfaceNative(typeBuilder, method, types, cppMethod, pointerField, vt_useSelfPtr);
+		}
+
+		finalType = typeBuilder.CreateType();
+
+		constructors.Remove(typeBuilder);
+		constructors[finalType] = finalType.GetConstructor(ICppClassConstructorTypes)!;
+		intTypeToDynType[interfaceType][flags] = finalType;
+		return finalType;
+	}
+
+	private static nuint ConstructProperty(
+		TypeBuilder typeBuilder, DynamicCppFieldFactory generator,
+		FieldBuilder pointerField, PropertyInfo pointerProperty, PropertyInfo interfaceProperty,
+		nuint fieldOffset
+	) {
+		string propName = interfaceProperty.Name;
+		Type propType = interfaceProperty.PropertyType;
+
+		MethodInfo getterMethod = interfaceProperty.GetMethod!;
+		MethodInfo setterMethod = interfaceProperty.SetMethod!;
+
+		PropertyBuilder concreteProp = typeBuilder.DefineProperty(propName, PropertyAttributes.None, propType, null);
+		// Both getter/setter use this bitflag combo
+		MethodAttributes propAttrs = MethodAttributes.Public | MethodAttributes.Virtual | MethodAttributes.SpecialName | MethodAttributes.HideBySig;
+
+		MethodBuilder getter = typeBuilder.DefineMethod(getterMethod.Name, propAttrs, propType, Type.EmptyTypes);
+		ILGenerator getterIL = getter.GetILGenerator();
+
+		MethodBuilder setter = typeBuilder.DefineMethod(setterMethod.Name, propAttrs, null, [propType]);
+		ILGenerator setterIL = setter.GetILGenerator();
+
+		// Call the DynamicCppFieldFactory to produce IL.
+		nuint fieldSize = generator(pointerField, pointerProperty, fieldOffset, interfaceProperty, getterIL, setterIL);
+
+		concreteProp.SetGetMethod(getter);
+		concreteProp.SetSetMethod(setter);
+
+		typeBuilder.DefineMethodOverride(getter, getterMethod);
+		typeBuilder.DefineMethodOverride(setter, setterMethod);
+
+		return fieldSize;
 	}
 
 	public static T Cast<T>(nint ptr) where T : ICppClass => Cast<T>((void*)ptr);
 	public static T Cast<T>(void* ptr) where T : ICppClass {
-		var generatedType = GetOrCreateDynamicCppType(typeof(T), ptr);
+		var generatedType = GetOrCreateDynamicCppType(typeof(T), DynamicTypeFlags.HandleFromPointer, ptr);
 		return (T)Activator.CreateInstance(generatedType, [(nint)ptr])!;
 	}
 
@@ -392,7 +739,7 @@ public static unsafe class MarshalCpp
 				else if (!expectedNativeType.IsValueType && !providedManagedType.IsValueType)
 					// Reference type cast
 					il.Emit(OpCodes.Castclass, expectedNativeType);
-				else if(providedManagedType.IsAssignableTo(typeof(ICppClass)) && expectedNativeType == typeof(nint)) {
+				else if (providedManagedType.IsAssignableTo(typeof(ICppClass)) && expectedNativeType == typeof(nint)) {
 					var prop = typeof(ICppClass).GetProperty("Pointer");
 					var getter = prop!.GetGetMethod();
 					il.Emit(OpCodes.Callvirt, getter);
@@ -608,7 +955,7 @@ public static unsafe partial class Tier0
 		pMonth = month;
 		pYear = year;
 
-		
+
 	}
 	[DllImport(dllname)] public static extern void Msg([MarshalAs(utf8)] string msg);
 	[DllImport(dllname)] public static extern void DevMsg([MarshalAs(utf8)] string msg);

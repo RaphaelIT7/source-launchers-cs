@@ -27,6 +27,9 @@ internal unsafe class LoadModules : IImplementsDetours
 
 		ICvar cvar = Source.Engine.CreateInterface<ICvar>("vstdlib", CVAR_INTERFACE_VERSION)!;
 		ConCommandBase ccmd = MarshalCpp.New<ConCommandBase>();
+		ccmd.Name = "csharp_run";
+		ccmd.HelpString = "There's no way this works, right?";
+
 		cvar.RegisterConCommand(ccmd);
 
 		return true;
