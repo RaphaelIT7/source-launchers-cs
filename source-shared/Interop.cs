@@ -88,9 +88,36 @@ public static class CppClassExts
 /// </summary>
 /// <param name="offset"></param>
 [AttributeUsage(AttributeTargets.Method)]
-public class VTMethodOffsetAttribute(int offset) : Attribute
+public class CppMethodFromVTOffsetAttribute(int offset) : Attribute
 {
 	public int Offset => offset;
+}
+
+/// <summary>
+/// Marks where to read the function from a sigscan
+/// </summary>
+/// <param name="offset"></param>
+[AttributeUsage(AttributeTargets.Method)]
+public class CppMethodFromSigScanAttribute(string dll, string sig) : Attribute
+{
+	public string DLL => dll;
+	byte?[]? sigscan;
+	public byte?[] Signature {
+		get {
+			if (sigscan != null) return sigscan;
+
+			sigscan = new byte?[(sig.Length + 1) / 3];
+			for (int i = 0; i < sig.Length; i += 3) {
+				ReadOnlySpan<char> ch = sig.AsSpan()[i..(i + 2)];
+				if (ch[0] == '?' || ch[1] == '?')
+					sigscan[i / 3] = null;
+				else
+					sigscan[i / 3] = Convert.FromHexString(ch)[0];
+			}
+
+			return sigscan;
+		}
+	}
 }
 
 /// <summary>
@@ -99,7 +126,7 @@ public class VTMethodOffsetAttribute(int offset) : Attribute
 /// </summary>
 /// <param name="has"></param>
 [AttributeUsage(AttributeTargets.Method)]
-public class VTMethodSelfPtrAttribute(bool has) : Attribute
+public class CppMethodSelfPtrAttribute(bool has) : Attribute
 {
 	public bool HasSelfPointer => has;
 }
@@ -129,6 +156,12 @@ public static unsafe class MarshalCpp
 	private static AssemblyBuilder? DynAssembly;
 	private static ModuleBuilder? DynCppInterfaceFactory;
 
+	public static T New<T>() where T : ICppClass {
+		void* ptr = (void*)Marshal.AllocHGlobal(100);
+		var generatedType = GetOrCreateDynamicCppType(typeof(T), ptr);
+		return (T)Activator.CreateInstance(generatedType, [(nint)ptr])!;
+	}
+
 	private static Type GetOrCreateDynamicCppType(Type interfaceType, void* ptr) {
 		if (intTypeToDynType.TryGetValue(interfaceType, out Type? generatedType))
 			return generatedType;
@@ -153,24 +186,32 @@ public static unsafe class MarshalCpp
 		string typeName = "Dynamic" + interfaceType.Name;
 		TypeBuilder typeBuilder = dynModule.DefineType(typeName, TypeAttributes.Public, null, [interfaceType]);
 
-		nint vtablePtr = *(nint*)ptr;
-		nint* vtable = (nint*)vtablePtr;
-
 		MethodInfo[] methods = interfaceType.GetMethods();
 		ImplFieldNameToDelegate[] info = new ImplFieldNameToDelegate[methods.Length];
 		int infoIndex = 0;
-
+		FieldBuilder pointerField = typeBuilder.DefineField("_pointer", typeof(nint), FieldAttributes.Private);
 		foreach (var method in methods) {
-			int? vtableOffsetN = method.GetCustomAttribute<VTMethodOffsetAttribute>()?.Offset;
+			int? vtableOffsetN = method.GetCustomAttribute<CppMethodFromVTOffsetAttribute>()?.Offset;
+			bool vt_useSelfPtr = method.GetCustomAttribute<CppMethodSelfPtrAttribute>()?.HasSelfPointer ?? true;
+
+			nint cppMethod;
 			if (vtableOffsetN == null) {
-				genInterfaceStub(typeBuilder, method);
-				continue;
+				var sigAttr = method.GetCustomAttribute<CppMethodFromSigScanAttribute>();
+				if (sigAttr == null) {
+					genInterfaceStub(typeBuilder, method);
+					continue;
+				}
+
+				cppMethod = (int)Scanning.ScanModuleProc32(sigAttr.DLL, sigAttr.Signature);
 			}
+			else {
+				nint vtablePtr = *(nint*)ptr;
+				nint* vtable = (nint*)vtablePtr;
 
-			int vt_offset = vtableOffsetN.Value;
-			bool vt_useSelfPtr = method.GetCustomAttribute<VTMethodSelfPtrAttribute>()?.HasSelfPointer ?? true;
+				int vt_offset = vtableOffsetN.Value;
 
-			nint vt_method = vtable[vt_offset];
+				cppMethod = vtable[vt_offset];
+			}
 
 			// Generate the delegate type
 			int typeIndex = 0;
@@ -199,12 +240,11 @@ public static unsafe class MarshalCpp
 			// Build the managed delegate type ...
 			Type delegateType = Expression.GetDelegateType(types);
 			// ... then cast the function pointer to it ...
-			Delegate delegateInstance = Marshal.GetDelegateForFunctionPointer(vt_method, delegateType);
+			Delegate delegateInstance = Marshal.GetDelegateForFunctionPointer(cppMethod, delegateType);
 			// ... then rewrite the dynamic object's method so it implements the interface as expected.
-			genInterfaceNativePtr(typeBuilder, method, delegateType, delegateInstance, justParams, vt_useSelfPtr, info, ref infoIndex);
+			genInterfaceNativePtr(typeBuilder, method, delegateType, pointerField, delegateInstance, justParams, vt_useSelfPtr, info, ref infoIndex);
 		}
 		// Setup Pointer. Since this comes from C++ land lets not let the user change it without throwing
-			FieldBuilder pointerField = typeBuilder.DefineField("_pointer", typeof(nint), FieldAttributes.Private);
 		{
 
 			PropertyBuilder pointerBuilder = typeBuilder.DefineProperty(
@@ -283,10 +323,10 @@ public static unsafe class MarshalCpp
 			ConstructorInfo objectCtor = typeof(object).GetConstructor(Type.EmptyTypes)!;
 			il.Emit(OpCodes.Call, objectCtor);
 
-			il.Emit(OpCodes.Ldarg_0); 
+			il.Emit(OpCodes.Ldarg_0);
 			il.Emit(OpCodes.Ldarg_1);
 			FieldInfo ptrField = pointerField;
-			il.Emit(OpCodes.Stfld, ptrField); 
+			il.Emit(OpCodes.Stfld, ptrField);
 
 			il.Emit(OpCodes.Ret);
 		}
@@ -334,6 +374,9 @@ public static unsafe class MarshalCpp
 	private static Type getMarshalType(ParameterInfo param) {
 		var type = param.ParameterType;
 		var marshalTo = param.GetCustomAttribute<MarshalAsAttribute>()?.Value;
+		if (type.IsAssignableTo(typeof(ICppClass))) {
+			return typeof(void*);
+		}
 
 		if (param.ParameterType == typeof(void))
 			return typeof(void);
@@ -350,7 +393,7 @@ public static unsafe class MarshalCpp
 	}
 
 	private static void genInterfaceNativePtr(
-		TypeBuilder typeBuilder, MethodInfo method, Type delegateType, Delegate delegateInstance,
+		TypeBuilder typeBuilder, MethodInfo method, Type delegateType, FieldBuilder pointerField, Delegate delegateInstance,
 		Type[] justParams, bool selfPtrFirst, ImplFieldNameToDelegate[] fields, ref int fieldArPtr) {
 		var methodBuilder = typeBuilder.DefineMethod(
 				method.Name,
@@ -387,9 +430,7 @@ public static unsafe class MarshalCpp
 		if (selfPtrFirst) {
 			// Read our pointer object
 			il.Emit(OpCodes.Ldarg_0);
-			var pointerProp = typeof(ICppClass).GetProperty("Pointer")!;
-			var getter = pointerProp.GetGetMethod()!;
-			il.Emit(OpCodes.Callvirt, getter);
+			il.Emit(OpCodes.Ldfld, pointerField);
 		}
 		for (int i = 0; i < parameters.Length; i++) {
 			il.Emit(OpCodes.Ldarg, i + 1);

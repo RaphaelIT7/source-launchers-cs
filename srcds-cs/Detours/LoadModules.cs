@@ -14,29 +14,20 @@ namespace srcds_cs.Detours;
 
 public interface CSys : ICppClass
 {
-	[VTMethodOffset(11)][VTMethodSelfPtr(false)] public unsafe void ConsoleOutput(AnsiBuffer txt);
+	[CppMethodFromVTOffset(11)][CppMethodSelfPtr(false)] public unsafe void ConsoleOutput(AnsiBuffer txt);
 }
 
 public unsafe interface ICvar : ICppClass
 {
-	// IAppSystem stuff
-	[VTMethodOffset(0)][VTMethodSelfPtr(true)] public void Connect(CreateInterfaceFn factory);
-	[VTMethodOffset(1)][VTMethodSelfPtr(true)] public void Disconnect();
-	[VTMethodOffset(2)][VTMethodSelfPtr(true)] public void* QueryInterface(AnsiBuffer interfaceName);
-	[VTMethodOffset(3)][VTMethodSelfPtr(true)] public int Init();
-	[VTMethodOffset(4)][VTMethodSelfPtr(true)] public void Shutdown();
-													  
-	[VTMethodOffset(5)][VTMethodSelfPtr(true)] public int AllocateDLLIdentifier();
-	[VTMethodOffset(6)][VTMethodSelfPtr(true)] public void RegisterConCommand(void* pCommandBase);
+	[CppMethodFromSigScan("vstdlib.dll", "55 8B EC 51 53 57 8B 7D 08 8B D9 8B CF 8B 07 8B")]
+	[CppMethodSelfPtr(false)]
+	public unsafe void RegisterConCommand(ICvar self, ConCommandBase txt);
+
 }
 
 public unsafe interface ConCommandBase : ICppClass
 {
-	// IAppSystem stuff
-	[VTMethodOffset(0)][VTMethodSelfPtr(true)] public void ConCommandBase_ctor();
-	[VTMethodOffset(1)][VTMethodSelfPtr(true)] public void ConCommandBase_ctor(AnsiBuffer name, AnsiBuffer helpString, int flags);
-	[VTMethodOffset(2)][VTMethodSelfPtr(true)] public void ConCommandBase_dtor(AnsiBuffer name, AnsiBuffer helpString, int flags);
-	[VTMethodOffset(3)][VTMethodSelfPtr(true)] public bool IsCommand();
+
 }
 
 
@@ -60,8 +51,8 @@ internal unsafe class LoadModules : IImplementsDetours
 		CSys_LoadModules_Original = engine.AddDetour<CSys_LoadModules>("dedicated.dll", [0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x60, 0x56, 0x8B], new(CSys_LoadModules_Detour));
 		// Does this work?
 		ICvar cvar = Source.Engine.CreateInterface<ICvar>("vstdlib.dll", CVAR_INTERFACE_VERSION)!;
-		
-		cvar.RegisterConCommand(null); // lol
+		ConCommandBase cmd = MarshalCpp.New<ConCommandBase>();
+		cvar.RegisterConCommand(cvar, cmd);
 	}
 
 	public const string CVAR_INTERFACE_VERSION = "VEngineCvar004";
