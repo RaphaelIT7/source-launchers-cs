@@ -622,6 +622,10 @@ public static unsafe partial class Tier0
 	// todo: figure out how much changes between CStrike-15 style and Obsoletium-style tier0.
 	// x86-64 gmod has a lot of cstrike slapped onto it vs main branch it seems
 	// also do this for vstdlib detour attributes
+	#region Shared Tier0 Exports
+	[DllImport(dllname)] public static extern void Plat_MessageBox([MarshalAs(utf8)] string title, [MarshalAs(utf8)] string message);
+	#endregion
+
 #if !CSTRIKE_TIER0
 	[DllImport(dllname)] public static extern void ConMsg([MarshalAs(utf8)] string msg);
 	[DllImport(dllname)] public static extern void Error([MarshalAs(utf8)] string msg);
@@ -647,7 +651,6 @@ public static unsafe partial class Tier0
 	[DllImport(dllname)] public static extern bool Plat_IsInBenchmarkMode();
 	[DllImport(dllname)] public static extern bool Plat_IsInDebugSession();
 	[DllImport(dllname)] public static extern bool Plat_IsUserAnAdmin();
-	[DllImport(dllname)] public static extern void Plat_MessageBox([MarshalAs(utf8)] string title, [MarshalAs(utf8)] string message);
 	[DllImport(dllname)] public static extern void Plat_SetBenchmarkMode(bool bBenchmark);
 	[DllImport(dllname)] public static extern void DoNewAssertDialog([MarshalAs(utf8)] string filename, int line, [MarshalAs(utf8)] string expression);
 #endif
