@@ -23,6 +23,7 @@ public readonly ref struct AnsiBuffer
 	public static unsafe string? ToManaged(sbyte* ptr, uint len) => Marshal.PtrToStringAnsi(new(ptr), (int)len);
 }
 
+#region Deprecated old interop garbage
 // TODO: deprecate everything below.
 public interface IContainsClassPointer
 {
@@ -52,9 +53,8 @@ public abstract class CppClassInterface<VTable> : IContainsClassPointer where VT
 		return (VTable*)vtablePtr;
 	}
 }
-
-
 // TODO: deprecate everything above.
+#endregion
 
 /// <summary>
 /// A C++ class or potential-C++ class. 
@@ -74,7 +74,6 @@ public interface ICppClass : IDisposable
 	/// </summary>
 	public bool ReadOnly { get; }
 }
-
 
 /// <summary>
 /// Marks where to read the virtual function.
@@ -96,6 +95,7 @@ public class VTMethodSelfPtrAttribute(bool has) : Attribute
 {
 	public bool HasSelfPointer => has;
 }
+
 
 /// <summary>
 /// A class to try implementing object-oriented marshalling between C++ and C# where exports aren't available (manual vtable offsets required in interface methods).

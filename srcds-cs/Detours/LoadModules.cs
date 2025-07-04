@@ -17,21 +17,17 @@ public interface CSys : ICppClass
 	[VTMethodOffset(11)][VTMethodSelfPtr(false)] public unsafe void ConsoleOutput(AnsiBuffer txt);
 }
 
-public interface ICvar : ICppClass
+public unsafe interface ICvar : ICppClass
 {
 	// IAppSystem stuff
-	[VTMethodOffset(0)][VTMethodSelfPtr(true)] public unsafe void Connect(CreateInterfaceFn factory);
-	[VTMethodOffset(1)][VTMethodSelfPtr(true)] public unsafe void Disconnect();
-	[VTMethodOffset(2)][VTMethodSelfPtr(true)] public unsafe void* QueryInterface(AnsiBuffer interfaceName);
-	[VTMethodOffset(3)][VTMethodSelfPtr(true)] public unsafe int Init();
-	[VTMethodOffset(4)][VTMethodSelfPtr(true)] public unsafe void Shutdown();
-
-	[VTMethodOffset(5)][VTMethodSelfPtr(true)] public unsafe int AllocateDLLIdentifier();
-	[VTMethodOffset(6)][VTMethodSelfPtr(true)] public unsafe void RegisterConCommand(ConCommandBase pCommandBase);
-}
-
-public interface ConCommandBase : ICppClass {
-
+	[VTMethodOffset(0)][VTMethodSelfPtr(true)] public void Connect(CreateInterfaceFn factory);
+	[VTMethodOffset(1)][VTMethodSelfPtr(true)] public void Disconnect();
+	[VTMethodOffset(2)][VTMethodSelfPtr(true)] public void* QueryInterface(AnsiBuffer interfaceName);
+	[VTMethodOffset(3)][VTMethodSelfPtr(true)] public int Init();
+	[VTMethodOffset(4)][VTMethodSelfPtr(true)] public void Shutdown();
+													  
+	[VTMethodOffset(5)][VTMethodSelfPtr(true)] public int AllocateDLLIdentifier();
+	[VTMethodOffset(6)][VTMethodSelfPtr(true)] public void RegisterConCommand(void* pCommandBase);
 }
 
 internal unsafe class LoadModules : IImplementsDetours
