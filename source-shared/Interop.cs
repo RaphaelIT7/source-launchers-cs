@@ -27,38 +27,6 @@ public readonly ref struct AnsiBuffer
 	public static unsafe string? ToManaged(sbyte* ptr, uint len) => Marshal.PtrToStringAnsi(new(ptr), (int)len);
 }
 
-#region Deprecated old interop garbage
-// TODO: deprecate everything below.
-public interface IContainsClassPointer
-{
-	public void SetPointer(IntPtr pointer);
-}
-public abstract class CppClassInterface<VTable> : IContainsClassPointer where VTable : unmanaged
-{
-	/// <summary>
-	/// The pointer in C++ unmanaged land to the instance of the interface. Use this in combination with <see cref="Table{VTable}"/> calls to call into
-	/// unmanaged methods.
-	/// </summary>
-	internal unsafe void* self;
-
-	public unsafe bool IsValid() => self != null;
-	public unsafe CppClassInterface() { }
-	public unsafe CppClassInterface(void* ptr) => self = ptr;
-	public unsafe CppClassInterface(nint ptr) => self = (void*)ptr;
-
-	public unsafe nint GetPointer() => (nint)self;
-	public unsafe void SetPointer(nint pointer) {
-		self = (void*)pointer;
-	}
-
-	[MethodImpl(MethodImplOptions.AggressiveInlining)]
-	public unsafe VTable* Table() {
-		void* vtablePtr = *(void**)self; // assuming `ptr` is a pointer to an object with a vtable
-		return (VTable*)vtablePtr;
-	}
-}
-// TODO: deprecate everything above.
-#endregion
 
 /// <summary>
 /// A C++ class or potential-C++ class. 

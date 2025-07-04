@@ -6,19 +6,6 @@ using System.Runtime.InteropServices;
 
 namespace srcds_cs.Detours;
 
-public unsafe class CSourceAppSystemGroup(void* ptr) : CppClassInterface<CSourceAppSystemGroup.VTable>(ptr)
-{
-	public struct VTable
-	{
-		public delegate* unmanaged<void*, bool> Create;
-		public delegate* unmanaged<void*, bool> PreInit;
-		public delegate* unmanaged<void*, bool> PostInit;
-		public delegate* unmanaged<void*, int> Main;
-		public delegate* unmanaged<void*, void> PostShutdown;
-		public delegate* unmanaged<void*, void> Destroy;
-	}
-}
-
 // todo: move this stuff to source?
 internal unsafe class PlugIntoAppFramework : IImplementsDetours
 {

@@ -68,7 +68,7 @@ public struct LoggingContext_t
 }
 
 // Wow! I hate this!
-
+/*
 public unsafe class ManagedLoggingListener : CppClassInterface<ManagedLoggingListener.VTable>
 {
 	public struct VTable
@@ -103,7 +103,7 @@ public unsafe class ManagedLoggingListener : CppClassInterface<ManagedLoggingLis
 		Console.WriteLine($"[Log] {managedMessage}");
 	}
 }
-
+*/
 internal unsafe class PlugIntoSpew : IImplementsDetours
 {
 	[DllImport("tier0", CallingConvention = CallingConvention.StdCall, CharSet = CharSet.Ansi)]
