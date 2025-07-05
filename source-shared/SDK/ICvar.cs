@@ -26,5 +26,7 @@ public interface ConCommandBase : ICppClass
 }
 
 public interface ConCommand : ConCommandBase {
-	[CppField<ConCommandBase>(0)][CppWidth(1)] public bool HasCompletionCallback
+	[CppField<ConCommandBase>(0)][CppFieldBitWidth(1)] public bool HasCompletionCallback { get; set; }
+	[CppField<ConCommandBase>(1)][CppFieldBitWidth(1)] public bool UsingNewCommandCallback { get; set; }
+	[CppField<ConCommandBase>(2)][CppFieldBitWidth(1)] public bool UsingCommandCallbackInterface { get; set; }
 }
