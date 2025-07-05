@@ -25,8 +25,21 @@ public interface ConCommandBase : ICppClass
 	[CppField(5)] public int Flags { get; set; }
 }
 
+public unsafe interface ICommandCallback : ICppClass
+{
+	public void CommandCallback(void* command);
+}
+
+// not doing this right now
+public interface ICommandCompletionCallback : ICppClass
+{
+
+}
+
 public interface ConCommand : ConCommandBase {
-	[CppField<ConCommandBase>(0)][CppFieldBitWidth(1)] public bool HasCompletionCallback { get; set; }
-	[CppField<ConCommandBase>(1)][CppFieldBitWidth(1)] public bool UsingNewCommandCallback { get; set; }
-	[CppField<ConCommandBase>(2)][CppFieldBitWidth(1)] public bool UsingCommandCallbackInterface { get; set; }
+	[CppField<ConCommandBase>(0)] public ICommandCallback CommandCallback { get; set; }
+	[CppField<ConCommandBase>(1)] public ICommandCompletionCallback CommandCompletionCallback { get; set; }
+	[CppField<ConCommandBase>(2)][CppFieldBitWidth(1)] public bool HasCompletionCallback { get; set; }
+	[CppField<ConCommandBase>(3)][CppFieldBitWidth(1)] public bool UsingNewCommandCallback { get; set; }
+	[CppField<ConCommandBase>(4)][CppFieldBitWidth(1)] public bool UsingCommandCallbackInterface { get; set; }
 }
