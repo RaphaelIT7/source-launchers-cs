@@ -20,15 +20,15 @@ internal class DetourConClearF : IImplementsDetours
 		Console.CursorTop = 1;
 
 		ICvar cvar = Source.Engine.CreateInterface<ICvar>("vstdlib", LoadModules.CVAR_INTERFACE_VERSION)!;
-		ConCommandBase cmd1 = cvar.FindVar("deathmatch");
-		ConCommandBase cmd2 = cvar.FindVar("coop");
-		ConCommandBase ccmd = MarshalCpp.New<ConCommandBase>();
-		string? test = ccmd.Name;
-		ccmd.Name = "csharp_run";
-		ccmd.HelpString = "There's no way this works, right?"; // the answer is no!
-		ccmd.ConCommandBase_VTable = cmd1.ConCommandBase_VTable; // proof of concept
-		ccmd.Flags = 1 << 2;
-		cvar.RegisterConCommand(ccmd);
+		ConCommandBase lua_run = cvar.FindCommandBase("lua_run");
+		ConCommandBase csharp_run = MarshalCpp.New<ConCommandBase>();
+
+		csharp_run.Name = "csharp_run";
+		csharp_run.HelpString = "There's no way this works, right?"; 
+		csharp_run.ConCommandBase_VTable = lua_run.ConCommandBase_VTable; // proof of concept
+		csharp_run.Flags = 1 << 2;
+
+		cvar.RegisterConCommand(csharp_run);
 	}
 
 	public void SetupWin32(HookEngine engine) {
