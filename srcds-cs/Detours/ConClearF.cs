@@ -28,7 +28,9 @@ internal class DetourConClearF : IImplementsDetours
 		ccmd.HelpString = "There's no way this works, right?";
 		ccmd.ConCommandBase_VTable = cmd1.ConCommandBase_VTable; // proof of concept
 		ccmd.Flags = 1 << 2;
-		cvar.RegisterConCommand(ccmd);
+		//cvar.RegisterConCommand(ccmd);
+
+		var testm = Scanning.ScanModuleProc("vstdlib", "55 8B EC 51 53 57 8B 7D 08 8B D9 8B CF 8B 07 8B");
 	}
 
 	public void SetupWin32(HookEngine engine) {

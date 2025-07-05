@@ -87,7 +87,7 @@ public class CppMethodFromVTOffsetAttribute(int offset) : Attribute
 /// </summary>
 /// <param name="offset"></param>
 [AttributeUsage(AttributeTargets.Method)]
-public class CppMethodFromSigScanAttribute(OperatingFlags arch, string dll, string sig) : Attribute
+public class CppMethodFromSigScanAttribute(OperatingFlags arch, string dll, string sig, [CallerFilePath] string? __from = null, [CallerLineNumber] int __fileNum = 0) : Attribute
 {
 	public OperatingFlags Architecture => arch;
 	public string DLL => dll;
@@ -158,7 +158,7 @@ public class CppMethodSelfPtrAttribute(bool has) : Attribute
 
 /// <summary>
 /// A class to try implementing object-oriented marshalling between C++ and C# where exports aren't available (manual vtable offsets required in interface methods).
-/// There may be some future stuff as well to automatically scan for vtables/vtable functions from a scanning address, similar to how <see cref="Scanning.ScanModuleProc32(string, ReadOnlySpan{byte?})"/>
+/// There may be some future stuff as well to automatically scan for vtables/vtable functions from a scanning address, similar to how <see cref="Scanning.ScanModuleProc(string, ReadOnlySpan{byte?})"/>
 /// would work but for vtables. Regardless, this is infinitely better than anything else I've had so far to accomplish interop.
 /// </summary>
 public static unsafe class MarshalCpp
@@ -681,7 +681,7 @@ public static unsafe class MarshalCpp
 					continue;
 				}
 
-				cppMethod = (int)Scanning.ScanModuleProc32(sigAttr.DLL, sigAttr.Signature);
+				cppMethod = (int)Scanning.ScanModuleProc(sigAttr.DLL, sigAttr.Signature);
 			}
 			else if (ptr != null) {
 				nint vtablePtr = *(nint*)ptr;
@@ -809,11 +809,11 @@ public static unsafe class MarshalCpp
 			il.Emit(OpCodes.Ldarg_0);
 			il.Emit(OpCodes.Ldfld, _pointer);
 		}
-		int start = selfPtr ? 1 : 0;
-		for (int i = start; i < types.Length - 1; i++) {
+
+		for (int i = 1; i < types.Length - 1; i++) {
 			il.Emit(OpCodes.Ldarg, i);
 			Type expectedNativeType = types[i];
-			Type providedManagedType = mparams[i - start];
+			Type providedManagedType = mparams[i - 1];
 			// Check against the index in types
 			// if we need to emit an implicit cast?
 			// we need to cast what's at Ldarg (given its probably providedManagedType) to expectedNativeType at runtime here
@@ -823,9 +823,11 @@ public static unsafe class MarshalCpp
 		il.Emit(OpCodes.Ldc_I8, (long)nativePtr);
 		il.Emit(OpCodes.Conv_I);
 
-		il.EmitCalli(OpCodes.Calli, CallingConvention.ThisCall, types[types.Length - 1], types[..(types.Length - 1)]);
+		var returnType = types[types.Length - 1];
+		var parameterTypes = types[..(types.Length - 1)];
+		il.EmitCalli(OpCodes.Calli, CallingConvention.ThisCall, returnType, parameterTypes);
 
-		if (method.ReturnType != typeof(void)) {
+		if (returnType != typeof(void)) {
 			Type expectedNativeType = types[types.Length - 1];
 			Type providedManagedType = method.ReturnType;
 			CheckCastEmitIL(il, expectedNativeType, providedManagedType, true);

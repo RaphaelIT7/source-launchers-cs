@@ -14,10 +14,11 @@ public interface IImplementsDetours
 	public void SetupLinux64(HookEngine engine) { DetourManager.NotSupported = true; }
 }
 
-public unsafe static class Scanning {
+public unsafe static class Scanning
+{
 	static Dictionary<string, nint> loadedModules = [];
 
-	public static nint GetModuleAddress32(string name) {
+	public static nint GetModuleAddress(string name) {
 		if (!loadedModules.TryGetValue(name, out nint address)) {
 			address = LoadLibraryExA(Path.Combine(Main.Program.Bin, name), nint.Zero, LOAD_WITH_ALTERED_SEARCH_PATH);
 			loadedModules[name] = address;
@@ -25,41 +26,51 @@ public unsafe static class Scanning {
 
 		return address;
 	}
-	public static nint GetModuleProc32(string moduleName, nint offset) {
-		nint baseAddress = GetModuleAddress32(moduleName);
+	public static nint GetModuleProc(string moduleName, nint offset) {
+		nint baseAddress = GetModuleAddress(moduleName);
 		return baseAddress + offset;
 	}
-	public static nint ScanModuleProc32(string moduleName, ReadOnlySpan<byte?> scan) {
-		nint baseAddress = GetModuleAddress32(moduleName);
-		GetModuleInformation(Process.GetCurrentProcess().Handle, baseAddress, out MODULEINFO modInfo, (uint)Unsafe.SizeOf<MODULEINFO>());
-		int scanLength = scan.Length;
 
-		unsafe {
-			byte* memory = (byte*)baseAddress;
-			for (int i = 0; i < modInfo.SizeOfImage - scanLength; i++) {
-				bool matched = true;
-				for (int j = 0; j < scanLength; j++) {
-					byte? expected = scan[j];
-					if (expected.HasValue && memory[i + j] != expected.Value) {
-						matched = false;
-						break;
+	public static nint ScanModuleProc(string moduleName, string scan)
+		=> ScanModuleProc(moduleName, Parse(scan));
+
+	public static nint ScanModuleProc(string moduleName, ReadOnlySpan<byte?> scan) {
+		nint baseAddress = GetModuleAddress(moduleName);
+		foreach (ProcessModule module in Process.GetCurrentProcess().Modules) {
+			if (module.BaseAddress == baseAddress) {
+				nint sizeOfImage = module.ModuleMemorySize;
+				int scanLength = scan.Length;
+
+				unsafe {
+					byte* memory = (byte*)baseAddress;
+					for (int i = 0; i < sizeOfImage - scanLength; i++) {
+						bool matched = true;
+						for (int j = 0; j < scanLength; j++) {
+							byte? expected = scan[j];
+							if (expected.HasValue && memory[i + j] != expected.Value) {
+								matched = false;
+								break;
+							}
+						}
+
+						if (matched) {
+							Console.Write($"[source / Scanning] Found signature ");
+							foreach (var b in scan) {
+								if (b == null)
+									Console.Write("?? ");
+								else
+									Console.Write($"{b:X} ");
+							}
+							Console.WriteLine($"at address +{i:X} in {moduleName}!");
+							return baseAddress + i;
+						}
 					}
+					throw new NullReferenceException("Cannot find signature");
 				}
 
-				if (matched) {
-					Console.Write($"[source / Scanning] Found signature ");
-					foreach (var b in scan) {
-						if (b == null)
-							Console.Write("?? ");
-						else
-							Console.Write($"{b:X} ");
-					}
-					Console.WriteLine($"at address +{i:X} in {moduleName}!");
-					return baseAddress + i;
-				}
 			}
-			throw new NullReferenceException("Cannot find signature");
 		}
+		throw new Exception("Cannot find module");
 	}
 
 	// expects a string of two-character hex codes (or ?? wildcards) separated by spaces until the final hex character
@@ -89,7 +100,7 @@ public unsafe static class DetourManager
 		return !notSupported;
 	}
 	public static T AddDetour<T>(this HookEngine engine, string module, ReadOnlySpan<byte?> pattern, T del) where T : Delegate {
-		T original = engine.CreateHook(Scanning.ScanModuleProc32(module, pattern), del);
+		T original = engine.CreateHook(Scanning.ScanModuleProc(module, pattern), del);
 		return original;
 	}
 
