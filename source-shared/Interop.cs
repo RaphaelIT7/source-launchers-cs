@@ -756,34 +756,13 @@ public static unsafe class MarshalCpp
 		}
 		int start = selfPtr ? 1 : 0;
 		for (int i = start; i < types.Length - 1; i++) {
+			il.Emit(OpCodes.Ldarg, i);
 			Type expectedNativeType = types[i];
 			Type providedManagedType = mparams[i - start];
-			il.Emit(OpCodes.Ldarg, i);
 			// Check against the index in types
 			// if we need to emit an implicit cast?
 			// we need to cast what's at Ldarg (given its probably providedManagedType) to expectedNativeType at runtime here
-			if (expectedNativeType != providedManagedType) {
-				if (expectedNativeType.IsValueType && providedManagedType.IsValueType)
-					// Integer or float widening/narrowing
-					il.Emit(getNumericConversionOpcode(providedManagedType, expectedNativeType));
-				else if (!expectedNativeType.IsValueType && !providedManagedType.IsValueType)
-					// Reference type cast
-					il.Emit(OpCodes.Castclass, expectedNativeType);
-				else if (providedManagedType.IsAssignableTo(typeof(ICppClass)) && expectedNativeType == typeof(nint)) {
-					var prop = typeof(ICppClass).GetProperty("Pointer");
-					var getter = prop!.GetGetMethod();
-					il.Emit(OpCodes.Callvirt, getter);
-				}
-				else if (expectedNativeType.IsValueType && !providedManagedType.IsValueType)
-					// Unbox to value type
-					il.Emit(OpCodes.Unbox_Any, expectedNativeType);
-				else if (!expectedNativeType.IsValueType && providedManagedType.IsValueType)
-					// Box the value type
-					il.Emit(OpCodes.Box, providedManagedType);
-				else
-					throw new InvalidOperationException($"Unsupported cast from {providedManagedType} to {expectedNativeType}");
-
-			}
+			CheckCastEmitIL(il, expectedNativeType, providedManagedType, false);
 		}
 
 		il.Emit(OpCodes.Ldc_I8, (long)nativePtr);
@@ -791,9 +770,55 @@ public static unsafe class MarshalCpp
 
 		il.EmitCalli(OpCodes.Calli, CallingConvention.ThisCall, types[types.Length - 1], types[..(types.Length - 1)]);
 
+		if(method.ReturnType != typeof(void)) {
+			Type expectedNativeType = types[types.Length - 1];
+			Type providedManagedType = method.ReturnType;
+			CheckCastEmitIL(il, expectedNativeType, providedManagedType, true);
+		}
+
 		il.Emit(OpCodes.Ret);
 
 		typeBuilder.DefineMethodOverride(methodBuilder, method);
+	}
+
+	/// <summary>
+	/// Performs casting during native interface generation
+	/// </summary>
+	/// <param name="il">IL generator</param>
+	/// <param name="nativeType">The type that we get from native-land</param>
+	/// <param name="managedType">The type that we get from managed-land</param>
+	/// <param name="returns"></param>
+	/// <exception cref="InvalidOperationException"></exception>
+	private static void CheckCastEmitIL(ILGenerator il, Type nativeType, Type managedType, bool returns) {
+		if (nativeType != managedType) {
+			if (nativeType.IsValueType && managedType.IsValueType)
+				// Integer or float widening/narrowing
+				il.Emit(getNumericConversionOpcode(managedType, nativeType));
+			else if (!nativeType.IsValueType && !managedType.IsValueType)
+				// Reference type cast
+				il.Emit(OpCodes.Castclass, nativeType);
+			else if (managedType.IsAssignableTo(typeof(ICppClass)) && nativeType == typeof(nint)) {
+				if (returns) {
+					var type = GetOrCreateDynamicCppType(managedType, DynamicTypeFlags.HandleFromPointer, null);
+					ConstructorInfo ctor = constructors[type];
+
+					il.Emit(OpCodes.Newobj, ctor);
+				}
+				else {
+					var prop = typeof(ICppClass).GetProperty("Pointer");
+					var getter = prop!.GetGetMethod();
+					il.Emit(OpCodes.Callvirt, getter);
+				}
+			}
+			else if (nativeType.IsValueType && !managedType.IsValueType)
+				// Unbox to value type
+				il.Emit(OpCodes.Unbox_Any, nativeType);
+			else if (!nativeType.IsValueType && managedType.IsValueType)
+				// Box the value type
+				il.Emit(OpCodes.Box, managedType);
+			else
+				throw new InvalidOperationException($"Unsupported cast from {managedType} to {nativeType}");
+		}
 	}
 
 	private static void genInterfaceStub(TypeBuilder typeBuilder, MethodInfo method) {

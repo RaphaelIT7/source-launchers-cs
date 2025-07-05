@@ -31,7 +31,7 @@ internal unsafe class LoadModules : IImplementsDetours
 		ccmd.Name = "csharp_run";
 		ccmd.HelpString = "There's no way this works, right?";
 
-		cvar.RegisterConCommand(ccmd);
+		//cvar.RegisterConCommand(ccmd);
 
 		return true;
 	}

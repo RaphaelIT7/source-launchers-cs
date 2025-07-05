@@ -1,6 +1,7 @@
 ﻿using MinHook;
 
 using Source;
+using Source.SDK;
 
 using System;
 using System.Runtime.InteropServices;
@@ -17,6 +18,9 @@ internal class DetourConClearF : IImplementsDetours
 		ConClearF_Original!();
 		Console.Clear();
 		Console.CursorTop = 1;
+
+		ICvar cvar = Source.Engine.CreateInterface<ICvar>("vstdlib", LoadModules.CVAR_INTERFACE_VERSION)!;
+		ConCommandBase cmd = cvar.FindVar("deathmatch");
 	}
 
 	public void SetupWin32(HookEngine engine) {
