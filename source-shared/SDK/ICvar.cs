@@ -10,6 +10,8 @@ public unsafe interface ICvar : ICppClass
 
 	[CppMethodFromSigScan(OperatingFlags.Win32, "vstdlib", "55 8B EC 8B 01 56 57 FF 50 44 8B F0")]
 	public unsafe ConCommandBase FindCommandBase(AnsiBuffer var_name);
+	[CppMethodFromSigScan(OperatingFlags.Win32, "vstdlib", "55 8B EC 8B 01 56 FF 75 08 FF 50 28 8B F0")]
+	public unsafe ConCommand FindCommand(AnsiBuffer var_name);
 	[CppMethodFromSigScan(OperatingFlags.Win32, "vstdlib", "55 8B EC A1 B4 27 ?? ?? 56 8B F1 A8 01 75 2D")]
 	public unsafe ConCommandBase FindVar(AnsiBuffer var_name);
 #endif
@@ -25,20 +27,15 @@ public interface ConCommandBase : ICppClass
 	[CppField(5)] public int Flags { get; set; }
 }
 
-public unsafe interface ICommandCallback : ICppClass
-{
-	public void CommandCallback(void* command);
-}
-// not doing this right now
-public interface ICommandCompletionCallback : ICppClass
-{
+// public unsafe delegate void FnCommandCallback_t(void* command);
+// public unsafe delegate void FnCommandCompletionCallback(AnsiBuffer partial); // todo
 
-}
 
 [CppInherit(typeof(ConCommandBase))]
-public interface ConCommand : ICppClass {
-	[CppField(0)] public ICommandCallback CommandCallback { get; set; }
-	[CppField(1)] public ICommandCompletionCallback CommandCompletionCallback { get; set; }
+public interface ConCommand : ConCommandBase
+{
+	[CppField(0)] public nint CommandCallback { get; set; }
+	[CppField(1)] public nint CommandCompletionCallback { get; set; }
 	[CppField(2), FieldWidth(1)] public bool HasCompletionCallback { get; set; }
 	[CppField(3), FieldWidth(1)] public bool UsingNewCommandCallback { get; set; }
 	[CppField(4), FieldWidth(1)] public bool UsingCommandCallbackInterface { get; set; }

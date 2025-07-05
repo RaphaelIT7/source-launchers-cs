@@ -20,7 +20,7 @@ internal class DetourConClearF : IImplementsDetours
 		Console.CursorTop = 1;
 
 		ICvar cvar = Source.Engine.CreateInterface<ICvar>("vstdlib", LoadModules.CVAR_INTERFACE_VERSION)!;
-		ConCommandBase lua_run = cvar.FindCommandBase("lua_run");
+		ConCommand lua_run = cvar.FindCommand("lua_run");
 		ConCommandBase csharp_run = MarshalCpp.New<ConCommandBase>();
 
 		csharp_run.Name = "csharp_run";
