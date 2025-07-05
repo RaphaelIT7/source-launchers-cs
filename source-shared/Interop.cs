@@ -33,6 +33,8 @@ public readonly ref struct AnsiBuffer
 	public static unsafe implicit operator sbyte*(AnsiBuffer buffer) => buffer.AsPointer();
 	public static unsafe implicit operator string?(AnsiBuffer buffer) => ToManaged(buffer.Pointer);
 	public static unsafe implicit operator AnsiBuffer(string text) => new(text);
+	public unsafe string? ToManaged() => Marshal.PtrToStringAnsi(Pointer);
+
 	public static unsafe string? ToManaged(nint ptr) => Marshal.PtrToStringAnsi(ptr);
 	public static unsafe string? ToManaged(void* ptr) => Marshal.PtrToStringAnsi(new(ptr));
 	public static unsafe string? ToManaged(sbyte* ptr) => Marshal.PtrToStringAnsi(new(ptr));
