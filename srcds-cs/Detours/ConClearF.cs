@@ -14,6 +14,10 @@ internal class DetourConClearF : IImplementsDetours
 	delegate void ConClearF();
 	static ConClearF? ConClearF_Original;
 
+	static unsafe void csharpRunCallback(void* ccommandOpq) {
+		Console.WriteLine("Wow!");
+	}
+
 	static unsafe void ConClearF_Detour() {
 		ConClearF_Original!();
 		Console.Clear();
@@ -21,12 +25,14 @@ internal class DetourConClearF : IImplementsDetours
 
 		ICvar cvar = Source.Engine.CreateInterface<ICvar>("vstdlib", LoadModules.CVAR_INTERFACE_VERSION)!;
 		ConCommand lua_run = cvar.FindCommand("lua_run");
-		ConCommandBase csharp_run = MarshalCpp.New<ConCommandBase>();
+		ConCommand csharp_run = MarshalCpp.New<ConCommand>();
 
 		csharp_run.Name = "csharp_run";
 		csharp_run.HelpString = "There's no way this works, right?"; 
 		csharp_run.ConCommandBase_VTable = lua_run.ConCommandBase_VTable; // proof of concept
 		csharp_run.Flags = 1 << 2;
+
+		csharp_run.CommandCallback = csharpRunCallback;
 
 		cvar.RegisterConCommand(csharp_run);
 	}

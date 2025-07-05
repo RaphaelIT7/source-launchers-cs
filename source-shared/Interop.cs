@@ -236,7 +236,7 @@ public unsafe class CppMSVC : ICppCompiler
 	{
 		public nuint AllocatedBits;
 		public nuint Alignment;
-		public List<MemoryMapIndex>? MemoryMap;
+		List<MemoryMapIndex>? MemoryMap;
 
 		public IEnumerable<MemoryMapIndex> ClassMap {
 			get {
@@ -267,15 +267,15 @@ public unsafe class CppMSVC : ICppCompiler
 		/// </summary>
 		/// <param name="name"></param>
 		/// <param name="size"></param>
-		public void Map(nuint size, string? name = null) {
+		public void Map(nint at, nuint size, string? name = null) {
 			if (!MarshalCpp.Debugging)
 				return;
 
 			MemoryMap ??= []; // Left unallocated unless debugging functions need it
 			MemoryMapIndex map = new MemoryMapIndex() {
+				Bit = (nuint)at,
+				Size = size,
 				Name = name,
-				Bit = AllocatedBits,
-				Size = size
 			};
 			MemoryMap.Add(map);
 		}
@@ -449,7 +449,48 @@ public unsafe class CppMSVC : ICppCompiler
 
 		return fieldSize;
 	}
+	static nuint DelegateFactory(
+		ICppCompiler compiler, FieldBuilder pointerField, PropertyInfo pointerProperty, nint fieldBitOffset,
+		PropertyInfo fieldProperty, ILGenerator getter, ILGenerator setter
+	) {
+		Debug.Assert((fieldBitOffset % 8) == 0, $"Issues detected: {nameof(DelegateFactory)} expected byte-aligned offset, but got +{fieldBitOffset % 8} bits?");
+		nint fieldOffset = fieldBitOffset / 8;
+		nuint fieldSize = (nuint)sizeof(nint);
 
+		MethodInfo ptr2del = typeof(Marshal).GetMethod(nameof(Marshal.GetDelegateForFunctionPointer), BindingFlags.Public | BindingFlags.Static, [typeof(nint), typeof(Type)])!;
+		MethodInfo del2ptr = typeof(Marshal).GetMethod(nameof(Marshal.GetFunctionPointerForDelegate), BindingFlags.Public | BindingFlags.Static, [typeof(Delegate)])!;
+
+		// Getter
+		{
+			MarshalCpp.PointerMathIL(pointerField, getter, fieldOffset);
+
+			getter.Emit(OpCodes.Ldobj, typeof(nint));
+			getter.Emit(OpCodes.Ldtoken, fieldProperty.PropertyType);
+			getter.Emit(OpCodes.Call, typeof(Type).GetMethod(nameof(Type.GetTypeFromHandle))!);
+			getter.Emit(OpCodes.Call, ptr2del);
+			getter.Emit(OpCodes.Ret);
+		}
+
+		// Setter
+		{
+			MarshalCpp.PointerMathIL(pointerField, setter, fieldOffset);
+
+			setter.Emit(OpCodes.Ldarg_1);
+			setter.Emit(OpCodes.Call, del2ptr);
+			setter.Emit(OpCodes.Stobj, typeof(nint));
+			setter.Emit(OpCodes.Ret);
+		}
+
+		return fieldSize;
+	}
+	public static nuint PropertyByteSize(PropertyInfo info) {
+		if (info.PropertyType.IsAssignableTo(typeof(ICppClass)))
+			return (nuint)sizeof(nint);
+		if (info.PropertyType.IsAssignableTo(typeof(Delegate)))
+			return (nuint)sizeof(nint);
+
+		return MarshalCpp.DataSizes[info.PropertyType];
+	}
 	static readonly Dictionary<Type, DynamicCppFieldFactory> Generators = new() {
 		{ typeof(bool),       UnmanagedTypeFieldFactory<bool> },
 
@@ -471,6 +512,7 @@ public unsafe class CppMSVC : ICppCompiler
 
 		{ typeof(ICppClass),  ManagedCppClassInterfaceFactory },
 		{ typeof(AnsiBuffer), AnsiBufferFactory },
+		{ typeof(Delegate), DelegateFactory },
 	};
 	private static bool resolveType(Type t, [NotNullWhen(true)] out DynamicCppFieldFactory? gen) {
 		return Generators.TryGetValue(t, out gen);
@@ -729,7 +771,7 @@ public unsafe class CppMSVC : ICppCompiler
 			// If multiple interfaces we must have ordering
 			IEnumerable<Type> subinterfaces = interfaces;
 			CppInheritAttribute? inherit = interfaceType.GetCustomAttribute<CppInheritAttribute>();
-			if(interfaces.Count() > 1) {
+			if (interfaces.Count() > 1) {
 				if (inherit == null)
 					throw new CppClassAssemblyException($"The type '{interfaceType.Name}' wants to implement {string.Join(", ", interfaces.Select(x => x.Name))} without explicit ordering; this is an invalid operation, use {nameof(CppInheritAttribute)} to define the order.");
 				subinterfaces = subinterfaces.OrderBy(x => {
@@ -745,6 +787,9 @@ public unsafe class CppMSVC : ICppCompiler
 				IEnumerable<PropertyInfo> subfields = subinterface.GetProperties().Where(MarshalCpp.IsValidCppField).OrderBy(MarshalCpp.GetPropertyFieldIndex);
 				MarshalCpp.PreventCppFieldGaps(subfields);
 				PerformDynamicFieldAssembly(typeBuilder, pointerField, pointerProperty, builder, subinterface, subfields);
+				// After each subinterface, we need to realign ourselves for the next one that comes up
+				// or the final interface
+				builder.Realign();
 			}
 		}
 
@@ -760,14 +805,30 @@ public unsafe class CppMSVC : ICppCompiler
 			if (!resolveType(propertyType, out generator)) {
 				if (propertyType.IsAssignableTo(typeof(ICppClass)))
 					resolveType(typeof(ICppClass), out generator);
+				else if (propertyType.IsAssignableTo(typeof(Delegate)))
+					resolveType(typeof(Delegate), out generator);
 			}
 
 			if (generator == null)
 				throw new NotImplementedException($"Unable to resolve property '{field.Name}''s type ({propertyType.FullName ?? propertyType.Name}) to a DynamicCppFieldGenerator. This is either invalid/unimplemented behavior.");
 
+			nuint fieldBits = idealAlignment ?? (PropertyByteSize(field) * 8);
+			builder.Pad(fieldBits);
+
 			nint fieldOffset = (nint)builder.AllocatedBits;
-			nuint typeBits = ConstructProperty(typeBuilder, generator, pointerField, pointerProperty, field, fieldOffset) * 8;
-			builder.AllocatedBits += idealAlignment ?? typeBits;
+			ConstructProperty(typeBuilder, generator, pointerField, pointerProperty, field, fieldOffset);
+
+			builder.AllocatedBits += fieldBits;
+			builder.Map(fieldOffset, fieldBits, field.Name);
+		}
+
+		if (MarshalCpp.Debugging) {
+			Console.WriteLine("----------------------------------------------------------------");
+			Console.WriteLine($"Memory Map for {interfaceType.Name}'s dynamic impl:");
+			foreach (var mapIndex in builder.ClassMap) {
+				Console.WriteLine($"bit {mapIndex.Bit:0000} - size {mapIndex.Size:00} - name {mapIndex.Name}");
+			}
+			Console.WriteLine("----------------------------------------------------------------");
 		}
 	}
 
@@ -1097,6 +1158,7 @@ public static unsafe class MarshalCpp
 
 		{ typeof(ICppClass),  (nuint)sizeof(nint) },
 		{ typeof(AnsiBuffer), (nuint)sizeof(nint) },
+		{ typeof(Delegate), (nuint)sizeof(nint) },
 	};
 
 	public static nuint GetLargestStructSize(IEnumerable<Type> types) {
@@ -1108,7 +1170,9 @@ public static unsafe class MarshalCpp
 				? typeSize
 				: type.IsAssignableTo(typeof(ICppClass))
 					? (nuint)sizeof(nint)
-					: throw new Exception();
+					: type.IsAssignableTo(typeof(Delegate))
+						? (nuint)sizeof(nint)
+						: throw new CppClassAssemblyException($"Could not determine a type size during GetLargestStructSize assembly - prevents proper class alignment.");
 #pragma warning restore CS8625 // Cannot convert null literal to non-nullable reference type.
 			if (typeSize > s)
 				s = typeSize;
@@ -1127,6 +1191,8 @@ public static unsafe class MarshalCpp
 		if (param.ParameterType.IsAssignableTo(typeof(ICppClass)))
 			return typeof(nint);
 		if (param.ParameterType.IsAssignableTo(typeof(AnsiBuffer)))
+			return typeof(nint);
+		if (param.ParameterType.IsAssignableTo(typeof(Delegate)))
 			return typeof(nint);
 
 		return param.ParameterType;

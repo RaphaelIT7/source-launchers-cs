@@ -27,15 +27,15 @@ public interface ConCommandBase : ICppClass
 	[CppField(5)] public int Flags { get; set; }
 }
 
-// public unsafe delegate void FnCommandCallback_t(void* command);
-// public unsafe delegate void FnCommandCompletionCallback(AnsiBuffer partial); // todo
+public unsafe delegate void FnCommandCallback_t(void* command);
+public unsafe delegate void FnCommandCompletionCallback(AnsiBuffer partial); // todo
 
 
 [CppInherit(typeof(ConCommandBase))]
 public interface ConCommand : ConCommandBase
 {
-	[CppField(0)] public nint CommandCallback { get; set; }
-	[CppField(1)] public nint CommandCompletionCallback { get; set; }
+	[CppField(0)] public FnCommandCallback_t CommandCallback { get; set; }
+	[CppField(1)] public FnCommandCompletionCallback CommandCompletionCallback { get; set; }
 	[CppField(2), FieldWidth(1)] public bool HasCompletionCallback { get; set; }
 	[CppField(3), FieldWidth(1)] public bool UsingNewCommandCallback { get; set; }
 	[CppField(4), FieldWidth(1)] public bool UsingCommandCallbackInterface { get; set; }
