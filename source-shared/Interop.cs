@@ -66,6 +66,9 @@ public static class CppClassExts
 	public static unsafe Span<T> Span<T>(this ICppClass clss, nint offset, int length) where T : unmanaged {
 		return new Span<T>((void*)(clss.Pointer + offset), length);
 	}
+	public static unsafe Span<byte> View<T>(this T clss) where T : ICppClass {
+		return new Span<byte>((void*)clss.Pointer, (int)MarshalCpp.SizeOf<T>());
+	}
 }
 
 /// <summary>
@@ -159,6 +162,12 @@ public class CppMethodSelfPtrAttribute(bool has) : Attribute
 /// </summary>
 public static unsafe class MarshalCpp
 {
+	public static unsafe nuint SizeOf<T>() where T : ICppClass {
+		var generatedType = GetOrCreateDynamicCppType(typeof(T), null);
+		nuint totalSize = (nuint)generatedType.GetField("RESERVED_ALLOCATION_SIZE", BindingFlags.Public | BindingFlags.Static)!.GetValue(null)!;
+		return totalSize;
+	}
+
 	static void pushArray<T>(T value, Span<T> values, ref int index) {
 		if (index >= values.Length)
 			throw new OverflowException($"array overflowed length ({values.Length})");
@@ -173,61 +182,27 @@ public static unsafe class MarshalCpp
 	}
 
 	// Interface Type -> Dynamic Type Flags -> Emitted Dynamic Type
-	private static Dictionary<Type, Dictionary<DynamicTypeFlags, Type>> intTypeToDynType = [];
+	private static Dictionary<Type, Type> intTypeToDynType = [];
 	// Interface implementation -> constructor builder. Hacky solution but it will do
 	private static Dictionary<Type, ConstructorInfo> constructors = [];
 	// The dynamic MSIL assemblers
 	private static AssemblyBuilder? DynAssembly;
 	private static ModuleBuilder? DynCppInterfaceFactory;
 
+	public static unsafe void* Alloc(nuint size, nuint alignment) => Tier0.Plat_Alloc(size);
+	public static unsafe void Dealloc(void* ptr) => Tier0.Plat_Free(ptr);
+
 	public static T New<T>() where T : ICppClass {
 		// We need to generate the type to know how much space it takes for allocation.
-		var generatedType = GetOrCreateDynamicCppType(typeof(T), DynamicTypeFlags.HandleFromCSharpAllocation, null);
-		nuint totalSize = (nuint)generatedType.GetField("RESERVED_ALLOCATION_SIZE", BindingFlags.Public | BindingFlags.Static)!.GetValue(null)!;
-		byte* ptr = (byte*)Tier0.Plat_Alloc(totalSize);
+		var generatedType = GetOrCreateDynamicCppType<T>(null);
+		nuint totalSize = MarshalCpp.SizeOf<T>();
+		byte* ptr = (byte*)Alloc(totalSize, 4);
 		// zero it out
 		for (nuint i = 0; i < totalSize; i++) {
 			ptr[i] = 0;
 		}
 
 		return (T)Activator.CreateInstance(generatedType, [(nint)ptr])!;
-	}
-
-	/// <summary>
-	/// Determines some internal class behavior.
-	/// 0 0 0 0 0 0 0 0
-	/// ^
-	/// ^
-	/// ^
-	/// ^
-	/// ^
-	/// ^
-	/// ^
-	/// ^------------------ If the handle came from C++/unknown territory or if it 100% came from C#
-	/// </summary>
-	public enum DynamicTypeFlags : byte
-	{
-		/// <summary>
-		/// The ICppClass instance was instantiated via a pointer that came from C++. Regardless
-		/// of if it was allocated by C# or not, if it was pulled from C++ or a non-100% C# pointer,
-		/// the interface will represent a readonly, unfreeable pointer. In most cases, the ICppClass
-		/// instance was likely instantiated via <see cref="MarshalCpp.Cast{T}(nint)"/> or <see cref="MarshalCpp.Cast{T}(void*)"/>.
-		/// <br/>
-		/// <br/>  - <see cref="IDisposable.Dispose"/> will perform no operation.
-		/// <br/>  - <see cref="ICppClass.Pointer"/> is read only.
-		/// </summary>
-		HandleFromPointer = 0,
-		/// <summary>
-		/// The ICppClass instance was instantiated via <see cref="MarshalCpp.New{T}"/>. Given this flag,
-		/// the class knows it is freeable without as many consequences to invalid operations, and therefore the pointer
-		/// can be freed. <b>It is up to your judgement on if the pointer can truly be freed or not without consequences, 
-		/// and the pointer will not be freed by deconstructors.</b> This is because the class instance may be used by 
-		/// C++ over the total lifetime of the program. To free it, you must use Dispose() manually or use it within a using statement.
-		/// <br/>
-		/// <br/> - <see cref="IDisposable.Dispose"/> will perform <see cref="Tier0.Plat_Free(void*)"/> on <see cref="ICppClass.Pointer"/>.
-		/// <br/> - <see cref="ICppClass.Pointer"/> is read only.
-		/// </summary>
-		HandleFromCSharpAllocation = 1
 	}
 
 	/// <summary>
@@ -281,7 +256,7 @@ public static unsafe class MarshalCpp
 			getter.Emit(OpCodes.Ldobj, typeof(nint));
 
 			// Instantiate a type of fieldProperty.PropertyType, with a single nint argument (which would be the value loaded by Ldobj)
-			Type t = GetOrCreateDynamicCppType(fieldProperty.PropertyType, DynamicTypeFlags.HandleFromPointer, null);
+			Type t = GetOrCreateDynamicCppType(fieldProperty.PropertyType, null);
 			ConstructorInfo ctor = constructors[t];
 
 			getter.Emit(OpCodes.Newobj, ctor);
@@ -382,6 +357,28 @@ public static unsafe class MarshalCpp
 		{ typeof(ICppClass), ManagedCppClassInterfaceFactory },
 		{ typeof(AnsiBuffer), AnsiBufferFactory },
 	};
+	static Dictionary<Type, nuint> DataSizes = new() {
+		{ typeof(bool),       sizeof(bool) },
+
+		{ typeof(sbyte),      sizeof(sbyte) },
+		{ typeof(short),      sizeof(short) },
+		{ typeof(int),        sizeof(int) },
+		{ typeof(long),       sizeof(long) },
+
+		{ typeof(byte),       sizeof(byte) },
+		{ typeof(ushort),     sizeof(ushort) },
+		{ typeof(uint),       sizeof(uint) },
+		{ typeof(ulong),      sizeof(ulong) },
+
+		{ typeof(float),      sizeof(float) },
+		{ typeof(double),     sizeof(double) },
+
+		{ typeof(nint),       (nuint)sizeof(nint) },
+		{ typeof(nuint),      (nuint)sizeof(nuint) },
+
+		{ typeof(ICppClass),  (nuint)sizeof(nint) },
+		{ typeof(AnsiBuffer), (nuint)sizeof(nint) },
+	};
 
 	private static bool resolveType(Type t, [NotNullWhen(true)] out DynamicCppFieldFactory? gen) {
 		return Generators.TryGetValue(t, out gen);
@@ -413,16 +410,23 @@ public static unsafe class MarshalCpp
 			lastField = x;
 		}
 	}
-
-	private static Type GetOrCreateDynamicCppType(Type interfaceType, DynamicTypeFlags flags, void* ptr) {
-		Type? finalType = null;
-		if (intTypeToDynType.TryGetValue(interfaceType, out var generatedTypes)) {
-			if (generatedTypes.TryGetValue(flags, out finalType))
-				return finalType;
+	internal static nuint GetLargestStructSize(IEnumerable<Type> types) {
+		nuint s = 0;
+		foreach (var type in types) {
+			// kind of a sucky solution to this
+#pragma warning disable CS8625 // Cannot convert null literal to non-nullable reference type.
+			nuint typeSize = DataSizes.TryGetValue(type, out typeSize) ? typeSize : type.IsAssignableTo(typeof(ICppClass)) ? (nuint)sizeof(nint) : throw new Exception();
+#pragma warning restore CS8625 // Cannot convert null literal to non-nullable reference type.
+			if (typeSize > s)
+				s = typeSize;
 		}
-		else {
-			generatedTypes = [];
-			intTypeToDynType[interfaceType] = generatedTypes;
+		return s;
+	}
+	internal static Type GetOrCreateDynamicCppType<T>(void* ptr = null) => GetOrCreateDynamicCppType(typeof(T), ptr);
+	internal static Type GetOrCreateDynamicCppType(Type interfaceType, void* ptr) {
+		Type? finalType = null;
+		if (intTypeToDynType.TryGetValue(interfaceType, out finalType)) {
+			return finalType;
 		}
 
 		if (!interfaceType.IsInterface)
@@ -443,9 +447,9 @@ public static unsafe class MarshalCpp
 
 		ModuleBuilder dynModule = DynCppInterfaceFactory;
 
-		string typeName = $"MarshalCpp_Dynamic{interfaceType.Name}_{flags}";
+		string typeName = $"MarshalCpp_Dynamic{interfaceType.Name}";
 		TypeBuilder typeBuilder = dynModule.DefineType(typeName, TypeAttributes.Public, null, [interfaceType]);
-		intTypeToDynType[interfaceType][flags] = typeBuilder; // TEMPORARILY store this so things don't die
+		intTypeToDynType[interfaceType] = typeBuilder; // TEMPORARILY store this so things don't die
 
 		// This is the pointer field to the C++ class. The Pointer property on an ICppClass is backed by this field.
 		// We declare this as soon as possible to use it in IL instructions later on the road
@@ -555,9 +559,6 @@ public static unsafe class MarshalCpp
 			il.Emit(OpCodes.Ldfld, pointerField);
 			il.Emit(OpCodes.Ret);
 		}
-		// Now trick Dispose() by just doing nothing
-		// I figured it would be better to encourage using semantics rather than
-		// making Dispose() throw an error
 		{
 			MethodBuilder disposeMethod = typeBuilder.DefineMethod(
 				"Dispose",
@@ -567,13 +568,13 @@ public static unsafe class MarshalCpp
 			);
 
 			ILGenerator il = disposeMethod.GetILGenerator();
-			if (flags.HasFlag(DynamicTypeFlags.HandleFromCSharpAllocation)) {
-				il.Emit(OpCodes.Ldarg_0);
-				il.Emit(OpCodes.Ldfld, pointerField);
 
-				MethodInfo platFree = typeof(Tier0).GetMethod("Plat_Free", BindingFlags.Public | BindingFlags.Static)!;
-				il.Emit(OpCodes.Call, platFree);
-			}
+			il.Emit(OpCodes.Ldarg_0);
+			il.Emit(OpCodes.Ldfld, pointerField);
+
+			MethodInfo platFree = typeof(MarshalCpp).GetMethod(nameof(Dealloc), BindingFlags.Public | BindingFlags.Static)!;
+			il.Emit(OpCodes.Call, platFree);
+
 			il.Emit(OpCodes.Ret);
 
 			typeBuilder.DefineMethodOverride(disposeMethod, typeof(IDisposable).GetMethod("Dispose")!);
@@ -586,6 +587,7 @@ public static unsafe class MarshalCpp
 		IEnumerable<MethodInfo> methods = interfaceType.GetMethods().Where(IsValidCppMethod);
 		// How much space the New<T> factory reserves in unallocated land
 		nuint allocation_size = 0;
+		nuint allocation_alignment = GetLargestStructSize(fields.Select(x => x.PropertyType));
 
 		foreach (var field in fields) {
 			var propertyType = field.PropertyType;
@@ -600,7 +602,8 @@ public static unsafe class MarshalCpp
 				throw new NotImplementedException($"Unable to resolve property '{field.Name}''s type ({propertyType.FullName ?? propertyType.Name}) to a DynamicCppFieldGenerator. This is either invalid/unimplemented behavior.");
 
 			nuint fieldOffset = allocation_size;
-			allocation_size += ConstructProperty(typeBuilder, generator, pointerField, pointerProperty, field, fieldOffset);
+			ConstructProperty(typeBuilder, generator, pointerField, pointerProperty, field, fieldOffset);
+			allocation_size += allocation_alignment;
 		}
 
 		FieldBuilder RESERVED_ALLOCATION_SIZE = typeBuilder.DefineField("RESERVED_ALLOCATION_SIZE", typeof(nuint), FieldAttributes.Public | FieldAttributes.Static);
@@ -610,7 +613,7 @@ public static unsafe class MarshalCpp
 			ConstructorBuilder cctor = typeBuilder.DefineTypeInitializer();
 			ILGenerator il = cctor.GetILGenerator();
 
-			il.Emit(OpCodes.Ldc_I8, (long)allocation_size); 
+			il.Emit(OpCodes.Ldc_I8, (long)allocation_size);
 			il.Emit(OpCodes.Conv_U);
 			il.Emit(OpCodes.Stsfld, RESERVED_ALLOCATION_SIZE);
 			il.Emit(OpCodes.Ret);
@@ -674,7 +677,7 @@ public static unsafe class MarshalCpp
 
 		constructors.Remove(typeBuilder);
 		constructors[finalType] = finalType.GetConstructor(ICppClassConstructorTypes)!;
-		intTypeToDynType[interfaceType][flags] = finalType;
+		intTypeToDynType[interfaceType] = finalType;
 		return finalType;
 	}
 
@@ -713,7 +716,7 @@ public static unsafe class MarshalCpp
 
 	public static T Cast<T>(nint ptr) where T : ICppClass => Cast<T>((void*)ptr);
 	public static T Cast<T>(void* ptr) where T : ICppClass {
-		var generatedType = GetOrCreateDynamicCppType(typeof(T), DynamicTypeFlags.HandleFromPointer, ptr);
+		var generatedType = GetOrCreateDynamicCppType(typeof(T), ptr);
 		return (T)Activator.CreateInstance(generatedType, [(nint)ptr])!;
 	}
 
@@ -772,7 +775,7 @@ public static unsafe class MarshalCpp
 
 		il.EmitCalli(OpCodes.Calli, CallingConvention.ThisCall, types[types.Length - 1], types[..(types.Length - 1)]);
 
-		if(method.ReturnType != typeof(void)) {
+		if (method.ReturnType != typeof(void)) {
 			Type expectedNativeType = types[types.Length - 1];
 			Type providedManagedType = method.ReturnType;
 			CheckCastEmitIL(il, expectedNativeType, providedManagedType, true);
@@ -801,7 +804,7 @@ public static unsafe class MarshalCpp
 				il.Emit(OpCodes.Castclass, nativeType);
 			else if (managedType.IsAssignableTo(typeof(ICppClass)) && nativeType == typeof(nint)) {
 				if (returns) {
-					var type = GetOrCreateDynamicCppType(managedType, DynamicTypeFlags.HandleFromPointer, null);
+					var type = GetOrCreateDynamicCppType(managedType, null);
 					ConstructorInfo ctor = constructors[type];
 
 					il.Emit(OpCodes.Newobj, ctor);
