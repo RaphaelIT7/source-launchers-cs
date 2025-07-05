@@ -40,6 +40,10 @@ public readonly ref struct AnsiBuffer
 	public static unsafe string? ToManaged(void* ptr) => Marshal.PtrToStringAnsi(new(ptr));
 	public static unsafe string? ToManaged(sbyte* ptr) => Marshal.PtrToStringAnsi(new(ptr));
 	public static unsafe string? ToManaged(sbyte* ptr, uint len) => Marshal.PtrToStringAnsi(new(ptr), (int)len);
+
+	public override string? ToString() {
+		return ToManaged();
+	}
 }
 
 
@@ -773,6 +777,8 @@ public static unsafe class MarshalCpp
 	private static Type getMarshalType(ParameterInfo param) {
 		if (param.ParameterType.IsAssignableTo(typeof(ICppClass)))
 			return typeof(nint);
+		if (param.ParameterType.IsAssignableTo(typeof(AnsiBuffer)))
+			return typeof(nint);
 
 		return param.ParameterType;
 	}
@@ -825,6 +831,7 @@ public static unsafe class MarshalCpp
 
 		var returnType = types[types.Length - 1];
 		var parameterTypes = types[..(types.Length - 1)];
+
 		il.EmitCalli(OpCodes.Calli, CallingConvention.ThisCall, returnType, parameterTypes);
 
 		if (returnType != typeof(void)) {
@@ -848,7 +855,17 @@ public static unsafe class MarshalCpp
 	/// <exception cref="InvalidOperationException"></exception>
 	private static void CheckCastEmitIL(ILGenerator il, Type nativeType, Type managedType, bool returns) {
 		if (nativeType != managedType) {
-			if (nativeType.IsValueType && managedType.IsValueType)
+			if (managedType.IsAssignableTo(typeof(AnsiBuffer)) && nativeType == typeof(nint)) {
+				if (returns) {
+					ConstructorInfo ctor = typeof(AnsiBuffer).GetConstructor(ICppClassConstructorTypes)!;
+					il.Emit(OpCodes.Newobj, ctor);
+				}
+				else {
+					var field = typeof(AnsiBuffer).GetField(nameof(AnsiBuffer.Pointer))!;
+					il.Emit(OpCodes.Ldfld, field);
+				}
+			}
+			else if (nativeType.IsValueType && managedType.IsValueType)
 				// Integer or float widening/narrowing
 				il.Emit(getNumericConversionOpcode(managedType, nativeType));
 			else if (!nativeType.IsValueType && !managedType.IsValueType)
@@ -862,8 +879,8 @@ public static unsafe class MarshalCpp
 					il.Emit(OpCodes.Newobj, ctor);
 				}
 				else {
-					var prop = typeof(ICppClass).GetProperty("Pointer");
-					var getter = prop!.GetGetMethod();
+					var prop = typeof(ICppClass).GetProperty(nameof(ICppClass.Pointer));
+					var getter = prop!.GetGetMethod()!;
 					il.Emit(OpCodes.Callvirt, getter);
 				}
 			}
