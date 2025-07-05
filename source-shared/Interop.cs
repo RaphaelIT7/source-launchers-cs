@@ -10,6 +10,7 @@ using System.Reflection.Metadata.Ecma335;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
 using System.Diagnostics.Metrics;
+using System.Text;
 
 namespace Source;
 
@@ -19,21 +20,21 @@ public readonly ref struct AnsiBuffer
 {
 	public readonly nint Pointer;
 
-	public AnsiBuffer(string? text) {
-		Pointer = Marshal.StringToHGlobalAnsi(text);
+	public unsafe AnsiBuffer(string? text) {
+		Pointer = (nint)MarshalCpp.StrToPtr(text);
 	}
 
 	public unsafe AnsiBuffer(void* text) => Pointer = (nint)text;
 	public unsafe AnsiBuffer(nint text) => Pointer = text;
 	public unsafe sbyte* AsPointer() => (sbyte*)Pointer.ToPointer();
 	public unsafe nint AsNativeInt() => Pointer;
-	public void Dispose() {
-		Marshal.FreeHGlobal(Pointer);
+	public unsafe void Dispose() {
+		MarshalCpp.Dealloc((void*)Pointer);
 	}
 	public static unsafe implicit operator sbyte*(AnsiBuffer buffer) => buffer.AsPointer();
 	public static unsafe implicit operator string?(AnsiBuffer buffer) => ToManaged(buffer.Pointer);
 	public static unsafe implicit operator AnsiBuffer(string text) => new(text);
-	public unsafe string? ToManaged() => Marshal.PtrToStringAnsi(Pointer);
+	public unsafe string? ToManaged() => MarshalCpp.PtrToStr((void*)Pointer);
 
 	public static unsafe string? ToManaged(nint ptr) => Marshal.PtrToStringAnsi(ptr);
 	public static unsafe string? ToManaged(void* ptr) => Marshal.PtrToStringAnsi(new(ptr));
@@ -189,14 +190,70 @@ public static unsafe class MarshalCpp
 	private static AssemblyBuilder? DynAssembly;
 	private static ModuleBuilder? DynCppInterfaceFactory;
 
-	public static unsafe void* Alloc(nuint size, nuint alignment) => Tier0.Plat_Alloc(size);
+	[DllImport("msvcrt.dll", CallingConvention = CallingConvention.Cdecl)]
+	static extern void* _aligned_malloc(nuint size, nuint alignment);
+
+	[DllImport("msvcrt.dll", CallingConvention = CallingConvention.Cdecl)]
+	static extern void _aligned_free(void* ptr);
+
+
+	/// <summary>
+	/// Allocator used by <see cref="MarshalCpp"/> operations
+	/// </summary>
+	/// <param name="size"></param>
+	/// <param name="alignment"></param>
+	/// <returns></returns>
+	public static unsafe void* Alloc(nuint size) => Tier0.Plat_Alloc(size);
+	/// <summary>
+	/// Deallocator used by <see cref="MarshalCpp"/> operations
+	/// </summary>
+	/// <param name="size"></param>
+	/// <param name="alignment"></param>
+	/// <returns></returns>
 	public static unsafe void Dealloc(void* ptr) => Tier0.Plat_Free(ptr);
+
+	/// <summary>
+	/// Allocates a string, with ANSI encoding by default (or if <c><paramref name="encoding"/> == null</c>).
+	/// It is your responsibility to free it later (or not to)
+	/// </summary>
+	/// <param name="managed"></param>
+	/// <returns></returns>
+	public static unsafe void* StrToPtr(ReadOnlySpan<char> managed, Encoding? encoding = null) {
+		if (managed == null) return null;
+
+		encoding ??= Encoding.Default;
+		nuint strsize = (nuint)encoding.GetByteCount(managed);
+		void* strallc = Alloc(strsize + 1);
+		encoding.GetBytes(managed, new Span<byte>(strallc, (int)strsize));
+		((byte*)strallc)[strsize] = 0; // null terminate the string
+		return strallc;
+	}
+
+	/// <summary>
+	/// Converts a null-terminated string pointer back into a managed string using ANSI by default.
+	/// </summary>
+	/// <param name="ptr">Pointer to the null-terminated string.</param>
+	/// <param name="encoding">Encoding used to interpret the bytes (default is ANSI/Encoding.Default).</param>
+	/// <returns>The managed string, or null if <paramref name="ptr"/> is null.</returns>
+	public static unsafe string? PtrToStr(void* ptr, Encoding? encoding = null) {
+		if (ptr == null) return null;
+
+		encoding ??= Encoding.Default;
+
+		// Find the length of the null-terminated string
+		byte* p = (byte*)ptr;
+		int length = 0;
+		while (p[length] != 0) length++;
+
+		// Decode bytes to string
+		return encoding.GetString(p, length);
+	}
 
 	public static T New<T>() where T : ICppClass {
 		// We need to generate the type to know how much space it takes for allocation.
 		var generatedType = GetOrCreateDynamicCppType<T>(null);
 		nuint totalSize = MarshalCpp.SizeOf<T>();
-		byte* ptr = (byte*)Alloc(totalSize, 4);
+		byte* ptr = (byte*)Alloc(totalSize);
 		// zero it out
 		for (nuint i = 0; i < totalSize; i++) {
 			ptr[i] = 0;
@@ -336,25 +393,25 @@ public static unsafe class MarshalCpp
 	}
 
 	static Dictionary<Type, DynamicCppFieldFactory> Generators = new() {
-		{ typeof(bool),     UnmanagedTypeFieldFactory<bool> },
+		{ typeof(bool),       UnmanagedTypeFieldFactory<bool> },
 
-		{ typeof(sbyte),     UnmanagedTypeFieldFactory<sbyte> },
-		{ typeof(short),     UnmanagedTypeFieldFactory<short> },
-		{ typeof(int),       UnmanagedTypeFieldFactory<int> },
-		{ typeof(long),      UnmanagedTypeFieldFactory<long> },
+		{ typeof(sbyte),      UnmanagedTypeFieldFactory<sbyte> },
+		{ typeof(short),      UnmanagedTypeFieldFactory<short> },
+		{ typeof(int),        UnmanagedTypeFieldFactory<int> },
+		{ typeof(long),       UnmanagedTypeFieldFactory<long> },
 
-		{ typeof(byte),      UnmanagedTypeFieldFactory<byte> },
-		{ typeof(ushort),    UnmanagedTypeFieldFactory<ushort> },
-		{ typeof(uint),      UnmanagedTypeFieldFactory<uint> },
-		{ typeof(ulong),     UnmanagedTypeFieldFactory<ulong> },
+		{ typeof(byte),       UnmanagedTypeFieldFactory<byte> },
+		{ typeof(ushort),     UnmanagedTypeFieldFactory<ushort> },
+		{ typeof(uint),       UnmanagedTypeFieldFactory<uint> },
+		{ typeof(ulong),      UnmanagedTypeFieldFactory<ulong> },
 
-		{ typeof(float),     UnmanagedTypeFieldFactory<float> },
-		{ typeof(double),    UnmanagedTypeFieldFactory<double> },
+		{ typeof(float),      UnmanagedTypeFieldFactory<float> },
+		{ typeof(double),     UnmanagedTypeFieldFactory<double> },
 
-		{ typeof(nint),      UnmanagedTypeFieldFactory<nint> },
-		{ typeof(nuint),     UnmanagedTypeFieldFactory<nuint> },
+		{ typeof(nint),       UnmanagedTypeFieldFactory<nint> },
+		{ typeof(nuint),      UnmanagedTypeFieldFactory<nuint> },
 
-		{ typeof(ICppClass), ManagedCppClassInterfaceFactory },
+		{ typeof(ICppClass),  ManagedCppClassInterfaceFactory },
 		{ typeof(AnsiBuffer), AnsiBufferFactory },
 	};
 	static Dictionary<Type, nuint> DataSizes = new() {

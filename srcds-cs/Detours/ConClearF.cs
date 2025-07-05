@@ -27,6 +27,7 @@ internal class DetourConClearF : IImplementsDetours
 		ccmd.Name = "csharp_run";
 		ccmd.HelpString = "There's no way this works, right?";
 		ccmd.ConCommandBase_VTable = cmd1.ConCommandBase_VTable; // proof of concept
+		ccmd.Flags = 1 << 2;
 		cvar.RegisterConCommand(ccmd);
 	}
 
