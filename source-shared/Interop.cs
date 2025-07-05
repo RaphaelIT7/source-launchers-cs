@@ -74,22 +74,24 @@ public static class CppClassExts
 	public static unsafe Span<byte> View<T>(this T clss) where T : ICppClass {
 		return new Span<byte>((void*)clss.Pointer, (int)MarshalCpp.SizeOf<T>());
 	}
+
+	public static void PushSpan<T>(this Span<T> values, T value, ref int index) {
+		if (index >= values.Length)
+			throw new OverflowException($"array overflowed length ({values.Length})");
+		values[index++] = value;
+	}
+	public static void PushSpan<T>(this T[] values, T value, ref int index) {
+		if (index >= values.Length)
+			throw new OverflowException($"array overflowed length ({values.Length})");
+		values[index++] = value;
+	}
 }
 
-/// <summary>
-/// Marks where to read the virtual function.
-/// </summary>
-/// <param name="offset"></param>
-[AttributeUsage(AttributeTargets.Method)]
-public class CppMethodFromVTOffsetAttribute(int offset) : Attribute
-{
-	public int Offset => offset;
-}
 /// <summary>
 /// Marks where to read the function from a sigscan
 /// </summary>
 /// <param name="offset"></param>
-[AttributeUsage(AttributeTargets.Method)]
+[AttributeUsage(AttributeTargets.Method, AllowMultiple = false)]
 public class CppMethodFromSigScanAttribute(OperatingFlags arch, string dll, string sig, [CallerFilePath] string? __from = null, [CallerLineNumber] int __fileNum = 0) : Attribute
 {
 	public OperatingFlags Architecture => arch;
@@ -118,20 +120,21 @@ public class CppMethodFromSigScanAttribute(OperatingFlags arch, string dll, stri
 /// <c>public const nuint RESERVED_ALLOCATION_SIZE = FINAL ALLOCATION SIZE</c>).
 /// </summary>
 /// <param name="fieldIndex"></param>
-[AttributeUsage(AttributeTargets.Property)]
+[AttributeUsage(AttributeTargets.Property, AllowMultiple = false)]
 public class CppFieldAttribute(int fieldIndex) : Attribute
 {
 	public virtual Type? BaseType { get; }
 	public int FieldIndex => fieldIndex;
 }
 /// <summary>
-/// (TODO) Defines a single C++ field, starting at the end index of an existing ICppClass interface.
+/// Defines the inherited ICppClasses to inherit from. Order must be maintained, hence the attribute rather than
+/// traditional inheritance via : ICppClassSubInterface, etc.
 /// </summary>
-/// <param name="fieldIndex"></param>
-[AttributeUsage(AttributeTargets.Property)]
-public class CppFieldAttribute<T>(int fieldIndex) : CppFieldAttribute(fieldIndex) where T : ICppClass
+/// <param name="types"></param>
+[AttributeUsage(AttributeTargets.Interface, AllowMultiple = false)]
+public class CppInheritAttribute(params Type[] types) : Attribute
 {
-	public override Type BaseType => typeof(T);
+	public ICollection<Type> Types => types;
 }
 /// <summary>
 /// (TODO) Defines the bit-width of a field if necessary. This is used by the dynamic type assembler
@@ -140,28 +143,18 @@ public class CppFieldAttribute<T>(int fieldIndex) : CppFieldAttribute(fieldIndex
 /// while assembling the type, then aligning to the nearest class-alignment afterwards...
 /// </summary>
 /// <param name="bits"></param>
-public class CppFieldBitWidthAttribute(int bits) : Attribute {
+[AttributeUsage(AttributeTargets.Property, AllowMultiple = false)]
+public class FieldWidthAttribute(int bits) : Attribute
+{
 	public int Bits => bits;
 }
 /// <summary>
 /// Designates that this field is a virtual function table
-/// todo: how the hell are we even going to find these...
+/// TODO: automate this?
 /// </summary>
-public class CppVTableAttribute(int fieldIndex, OperatingFlags arch, string dll, string sig) : Attribute
+public class CppVTableAttribute(int fieldIndex) : Attribute
 {
 	public int FieldIndex => fieldIndex;
-	public OperatingFlags Architecture => arch;
-	public string DLL => dll;
-	byte?[]? sigscan;
-	public byte?[] Signature {
-		get {
-			if (sigscan != null) return sigscan;
-
-			sigscan = Scanning.Parse(sig);
-
-			return sigscan;
-		}
-	}
 }
 /// <summary>
 /// Marks if the vtable method has a void* self pointer in its C++ signature. If not, it is excluded from the dynamic generation.
@@ -174,159 +167,85 @@ public class CppMethodSelfPtrAttribute(bool has) : Attribute
 	public bool HasSelfPointer => has;
 }
 
+/// <summary>
+/// A compiler able to produce memory-mapped wrappings and a dynamic <see cref="ICppClass"/> implementation
+/// based off the <see cref="ICppClass"/>'s <see cref="CppFieldAttribute"/>'s, <see cref="CppMethodFromSigScanAttribute"/>, etc...
+/// </summary>
+public interface ICppCompiler
+{
+	/// <summary>
+	/// Produce a size from an interface type.
+	/// </summary>
+	public nuint SizeOf<T>() where T : ICppClass;
+	/// <summary>
+	/// Produce an alignment from an interface type.
+	/// </summary>
+	public nuint AlignOf<T>() where T : ICppClass;
+	/// <summary>
+	/// Produce a dynamic type from an interface type.
+	/// </summary>
+	public Type TypeOf(Type t);
+	/// <summary>
+	/// Produce a dynamic type from an interface type.
+	/// </summary>
+	public Type TypeOf<T>() where T : ICppClass => TypeOf(typeof(T));
+	/// <summary>
+	/// Produces a constructor(nint ptr), safe to use during dynamic builds as well
+	/// </summary>
+	/// <param name="t"></param>
+	/// <returns></returns>
+	public ConstructorInfo NintConstructorOf(Type t);
+}
 
 /// <summary>
-/// A class to try implementing object-oriented marshalling between C++ and C# where exports aren't available (manual vtable offsets required in interface methods).
-/// There may be some future stuff as well to automatically scan for vtables/vtable functions from a scanning address, similar to how <see cref="Scanning.ScanModuleProc(string, ReadOnlySpan{byte?})"/>
-/// would work but for vtables. Regardless, this is infinitely better than anything else I've had so far to accomplish interop.
+/// An unmanaged memory allocator and deallocator.
 /// </summary>
-public static unsafe class MarshalCpp
+public unsafe interface ICppAllocator
 {
-	public static unsafe nuint SizeOf<T>() where T : ICppClass {
-		var generatedType = GetOrCreateDynamicCppType(typeof(T), null);
-		nuint totalSize = (nuint)generatedType.GetField("RESERVED_ALLOCATION_SIZE", BindingFlags.Public | BindingFlags.Static)!.GetValue(null)!;
-		return totalSize;
-	}
+	public void* Alloc(nuint size, nuint alignment);
+	public void Dealloc(void* ptr);
+}
 
-	static void pushArray<T>(T value, Span<T> values, ref int index) {
-		if (index >= values.Length)
-			throw new OverflowException($"array overflowed length ({values.Length})");
-		values[index++] = value;
-	}
 
-	struct ImplFieldNameToDelegate
-	{
-		public bool IsNativeCall;
-		public FieldBuilder Field;
-		public nint Delegate;
-	}
+// pointerField is so we can reach into _pointer for this
+// pointerProperty is so we can reach into _pointer for non-this but still ICppClass
+// fieldOffset is the offset calculated by the assembler
+// builder is the builder that the dynamic assembler produces
+
+public delegate nuint DynamicCppFieldFactory(
+	ICppCompiler compiler, FieldBuilder pointerField, PropertyInfo pointerProperty,
+	nint fieldOffset, PropertyInfo fieldProperty, ILGenerator getter, ILGenerator setter
+);
+
+public unsafe class CppMSVC : ICppCompiler
+{
+	public const string RESERVED_ALLOCATION_SIZE = "RESERVED_ALLOCATION_SIZE";
+	public const string CLASS_ALIGNMENT = "CLASS_ALIGNMENT";
 
 	// Interface Type -> Dynamic Type Flags -> Emitted Dynamic Type
-	private static Dictionary<Type, Type> intTypeToDynType = [];
+	Dictionary<Type, Type> intTypeToDynType = [];
 	// Interface implementation -> constructor builder. Hacky solution but it will do
-	private static Dictionary<Type, ConstructorInfo> constructors = [];
+	Dictionary<Type, ConstructorInfo> constructors = [];
 	// The dynamic MSIL assemblers
-	private static AssemblyBuilder? DynAssembly;
-	private static ModuleBuilder? DynCppInterfaceFactory;
+	AssemblyBuilder? DynAssembly;
+	ModuleBuilder? DynCppInterfaceFactory;
 
-	/// <summary>
-	/// Allocator used by <see cref="MarshalCpp"/> operations
-	/// </summary>
-	/// <param name="size"></param>
-	/// <param name="alignment"></param>
-	/// <returns></returns>
-	public static unsafe void* Alloc(nuint size) => Tier0.Plat_Alloc(size);
-	/// <summary>
-	/// Deallocator used by <see cref="MarshalCpp"/> operations
-	/// </summary>
-	/// <param name="size"></param>
-	/// <param name="alignment"></param>
-	/// <returns></returns>
-	public static unsafe void Dealloc(void* ptr) => Tier0.Plat_Free(ptr);
-
-	/// <summary>
-	/// Allocates a string, with ANSI encoding by default (or if <c><paramref name="encoding"/> == null</c>).
-	/// It is your responsibility to free it later (or not to)
-	/// </summary>
-	/// <param name="managed"></param>
-	/// <returns></returns>
-	public static unsafe void* StrToPtr(ReadOnlySpan<char> managed, Encoding? encoding = null) {
-		if (managed == null) return null;
-
-		encoding ??= Encoding.Default;
-		nuint strsize = (nuint)encoding.GetByteCount(managed);
-		void* strallc = Alloc(strsize + 1);
-		encoding.GetBytes(managed, new Span<byte>(strallc, (int)strsize));
-		((byte*)strallc)[strsize] = 0; // null terminate the string
-		return strallc;
-	}
-
-	/// <summary>
-	/// Converts a null-terminated string pointer back into a managed string using ANSI by default.
-	/// </summary>
-	/// <param name="ptr">Pointer to the null-terminated string.</param>
-	/// <param name="encoding">Encoding used to interpret the bytes (default is ANSI/Encoding.Default).</param>
-	/// <returns>The managed string, or null if <paramref name="ptr"/> is null.</returns>
-	public static unsafe string? PtrToStr(void* ptr, Encoding? encoding = null) {
-		if (ptr == null) return null;
-
-		encoding ??= Encoding.Default;
-
-		// Find the length of the null-terminated string
-		byte* p = (byte*)ptr;
-		int length = 0;
-		while (p[length] != 0) length++;
-
-		// Decode bytes to string
-		return encoding.GetString(p, length);
-	}
-
-	public static T New<T>() where T : ICppClass {
-		// We need to generate the type to know how much space it takes for allocation.
-		var generatedType = GetOrCreateDynamicCppType<T>(null);
-		nuint totalSize = MarshalCpp.SizeOf<T>();
-		byte* ptr = (byte*)Alloc(totalSize);
-		// zero it out
-		for (nuint i = 0; i < totalSize; i++) {
-			ptr[i] = 0;
-		}
-
-		return (T)Activator.CreateInstance(generatedType, [(nint)ptr])!;
-	}
-
-	/// <summary>
-	/// Determines the ICppClass hashcode. Likely implemented by the dynamic type (ie. the dyntype
-	/// should insert this method call into its implementation)
-	/// </summary>
-	public static int CppClassHashcode(ICppClass self) => HashCode.Combine(self.Pointer);
-	/// <summary>
-	/// Determines ICppClass equality. Likely implemented by the dynamic type (ie. the dyntype
-	/// should insert this method call into its implementation)
-	/// </summary>
-	public static bool CppClassEquals(ICppClass? a, ICppClass? b) {
-		if ((a == null || a.Pointer == 0) && (b == null || b.Pointer == 0)) return true;
-		return a.Pointer == b.Pointer;
-	}
-
-	// pointerField is so we can reach into _pointer for this
-	// pointerProperty is so we can reach into _pointer for non-this but still ICppClass
-	// fieldOffset is the offset calculated by the assembler
-	// builder is the builder that the dynamic assembler produces
-
-	delegate nuint DynamicCppFieldFactory(
-		FieldBuilder pointerField, PropertyInfo pointerProperty, nuint fieldOffset,
-		PropertyInfo fieldProperty, ILGenerator getter, ILGenerator setter
-	);
-
-	static void PointerMathIL(FieldBuilder pointerField, ILGenerator il, nuint fieldOffset) {
-		il.Emit(OpCodes.Ldarg_0);
-		il.Emit(OpCodes.Ldfld, pointerField);
-		if (fieldOffset != 0) {
-			il.Emit(OpCodes.Ldc_I8, (long)fieldOffset);
-			il.Emit(OpCodes.Conv_I);
-			il.Emit(OpCodes.Add);
-		}
-	}
-
-	/// <summary>
-	/// <c>[typeof(<see cref="nint"/>)]</c>
-	/// </summary>
-	static readonly Type[] ICppClassConstructorTypes = [typeof(nint)];
-
+	public nuint AlignOf<T>() where T : ICppClass => 0;
+	public ConstructorInfo NintConstructorOf(Type t) => constructors[t];
 	static nuint ManagedCppClassInterfaceFactory(
-		FieldBuilder pointerField, PropertyInfo pointerProperty, nuint fieldOffset,
+		ICppCompiler compiler, FieldBuilder pointerField, PropertyInfo pointerProperty, nint fieldOffset,
 		PropertyInfo fieldProperty, ILGenerator getter, ILGenerator setter
 	) {
 		nuint fieldSize = (nuint)sizeof(nint);
 
 		// Getter
 		{
-			PointerMathIL(pointerField, getter, fieldOffset);
+			MarshalCpp.PointerMathIL(pointerField, getter, fieldOffset);
 			getter.Emit(OpCodes.Ldobj, typeof(nint));
 
 			// Instantiate a type of fieldProperty.PropertyType, with a single nint argument (which would be the value loaded by Ldobj)
-			Type t = GetOrCreateDynamicCppType(fieldProperty.PropertyType, null);
-			ConstructorInfo ctor = constructors[t];
+			Type t = compiler.TypeOf(fieldProperty.PropertyType);
+			ConstructorInfo ctor = compiler.NintConstructorOf(t);
 
 			getter.Emit(OpCodes.Newobj, ctor);
 			getter.Emit(OpCodes.Ret);
@@ -334,7 +253,7 @@ public static unsafe class MarshalCpp
 
 		// Setter
 		{
-			PointerMathIL(pointerField, setter, fieldOffset);
+			MarshalCpp.PointerMathIL(pointerField, setter, fieldOffset);
 			setter.Emit(OpCodes.Ldarg_1);
 			// We need to take the Pointer property (pointerProperty) from the ICppClass loaded by Ldarg_1,
 			// and push that to the stack, to then be stored by Stobj.
@@ -348,7 +267,7 @@ public static unsafe class MarshalCpp
 	}
 
 	static nuint UnmanagedTypeFieldFactory<T>(
-		FieldBuilder pointerField, PropertyInfo pointerProperty, nuint fieldOffset,
+		ICppCompiler compiler, FieldBuilder pointerField, PropertyInfo pointerProperty, nint fieldOffset,
 		PropertyInfo fieldProperty, ILGenerator getter, ILGenerator setter
 	) where T : unmanaged {
 		nuint fieldSize = (nuint)sizeof(T);
@@ -360,13 +279,13 @@ public static unsafe class MarshalCpp
 
 		// Getter
 		{
-			PointerMathIL(pointerField, getter, fieldOffset);
+			MarshalCpp.PointerMathIL(pointerField, getter, fieldOffset);
 			getter.Emit(OpCodes.Ldobj, typeof(T));
 			getter.Emit(OpCodes.Ret);
 		}
 		// Setter
 		{
-			PointerMathIL(pointerField, setter, fieldOffset);
+			MarshalCpp.PointerMathIL(pointerField, setter, fieldOffset);
 			setter.Emit(OpCodes.Ldarg_1);
 			setter.Emit(OpCodes.Stobj, typeof(T));
 			setter.Emit(OpCodes.Ret);
@@ -377,23 +296,23 @@ public static unsafe class MarshalCpp
 
 
 	static nuint AnsiBufferFactory(
-		FieldBuilder pointerField, PropertyInfo pointerProperty, nuint fieldOffset,
+		ICppCompiler compiler, FieldBuilder pointerField, PropertyInfo pointerProperty, nint fieldOffset,
 		PropertyInfo fieldProperty, ILGenerator getter, ILGenerator setter
 	) {
 		nuint fieldSize = (nuint)sizeof(nint);
 
 		// Getter
 		{
-			PointerMathIL(pointerField, getter, fieldOffset);
+			MarshalCpp.PointerMathIL(pointerField, getter, fieldOffset);
 			getter.Emit(OpCodes.Ldobj, typeof(nint));
-			ConstructorInfo ctor = typeof(AnsiBuffer).GetConstructor(ICppClassConstructorTypes)!;
+			ConstructorInfo ctor = typeof(AnsiBuffer).GetConstructor(MarshalCpp.SINGLE_TYPEOF_NINT_ARRAY)!;
 			getter.Emit(OpCodes.Newobj, ctor);
 			getter.Emit(OpCodes.Ret);
 		}
 
 		// Setter
 		{
-			PointerMathIL(pointerField, setter, fieldOffset);
+			MarshalCpp.PointerMathIL(pointerField, setter, fieldOffset);
 			setter.Emit(OpCodes.Ldarg_1);
 			setter.Emit(OpCodes.Ldfld, typeof(AnsiBuffer).GetField(nameof(AnsiBuffer.Pointer))!);
 
@@ -404,7 +323,7 @@ public static unsafe class MarshalCpp
 		return fieldSize;
 	}
 
-	static Dictionary<Type, DynamicCppFieldFactory> Generators = new() {
+	public static readonly Dictionary<Type, DynamicCppFieldFactory> Generators = new() {
 		{ typeof(bool),       UnmanagedTypeFieldFactory<bool> },
 
 		{ typeof(sbyte),      UnmanagedTypeFieldFactory<sbyte> },
@@ -426,73 +345,18 @@ public static unsafe class MarshalCpp
 		{ typeof(ICppClass),  ManagedCppClassInterfaceFactory },
 		{ typeof(AnsiBuffer), AnsiBufferFactory },
 	};
-	static Dictionary<Type, nuint> DataSizes = new() {
-		{ typeof(bool),       sizeof(bool) },
-
-		{ typeof(sbyte),      sizeof(sbyte) },
-		{ typeof(short),      sizeof(short) },
-		{ typeof(int),        sizeof(int) },
-		{ typeof(long),       sizeof(long) },
-
-		{ typeof(byte),       sizeof(byte) },
-		{ typeof(ushort),     sizeof(ushort) },
-		{ typeof(uint),       sizeof(uint) },
-		{ typeof(ulong),      sizeof(ulong) },
-
-		{ typeof(float),      sizeof(float) },
-		{ typeof(double),     sizeof(double) },
-
-		{ typeof(nint),       (nuint)sizeof(nint) },
-		{ typeof(nuint),      (nuint)sizeof(nuint) },
-
-		{ typeof(ICppClass),  (nuint)sizeof(nint) },
-		{ typeof(AnsiBuffer), (nuint)sizeof(nint) },
-	};
 
 	private static bool resolveType(Type t, [NotNullWhen(true)] out DynamicCppFieldFactory? gen) {
 		return Generators.TryGetValue(t, out gen);
 	}
 
-	public static bool IsValidCppMethod(MethodInfo x) {
-		return
-			x.GetCustomAttribute<CppMethodFromVTOffsetAttribute>() != null
-			|| x.GetCustomAttribute<CppMethodFromSigScanAttribute>() != null;
+	public nuint SizeOf<T>() where T : ICppClass {
+		var generatedType = TypeOf(typeof(T));
+		nuint totalSize = (nuint)generatedType.GetField(RESERVED_ALLOCATION_SIZE, BindingFlags.Public | BindingFlags.Static)!.GetValue(null)!;
+		return totalSize;
 	}
 
-	public static bool IsValidCppField(PropertyInfo x) {
-		return x.GetCustomAttribute<CppFieldAttribute>() != null || x.GetCustomAttribute<CppVTableAttribute>() != null;
-	}
-
-	public static int GetPropertyFieldIndex(PropertyInfo x)
-		=> x.GetCustomAttribute<CppFieldAttribute>()?.FieldIndex ?? x.GetCustomAttribute<CppVTableAttribute>()!.FieldIndex;
-
-	public static void PreventCppFieldGaps(IEnumerable<PropertyInfo> fields) {
-		int lastIndex = -1;
-		int index = 0;
-		PropertyInfo? lastField = null;
-		foreach (PropertyInfo x in fields) {
-			var propIndex = GetPropertyFieldIndex(x);
-			if (propIndex != index)
-				throw new IndexOutOfRangeException($"MarshalCpp dynamic factory failed to ensure field order. This matters due to how sizing influences offsets.\n\nThe two offenders were:\n{lastField?.Name ?? "<start>"} [{lastIndex}] -> {x.Name} [{propIndex}]");
-			lastIndex = index;
-			index = propIndex + 1;
-			lastField = x;
-		}
-	}
-	internal static nuint GetLargestStructSize(IEnumerable<Type> types) {
-		nuint s = 0;
-		foreach (var type in types) {
-			// kind of a sucky solution to this
-#pragma warning disable CS8625 // Cannot convert null literal to non-nullable reference type.
-			nuint typeSize = DataSizes.TryGetValue(type, out typeSize) ? typeSize : type.IsAssignableTo(typeof(ICppClass)) ? (nuint)sizeof(nint) : throw new Exception();
-#pragma warning restore CS8625 // Cannot convert null literal to non-nullable reference type.
-			if (typeSize > s)
-				s = typeSize;
-		}
-		return s;
-	}
-	internal static Type GetOrCreateDynamicCppType<T>(void* ptr = null) => GetOrCreateDynamicCppType(typeof(T), ptr);
-	internal static Type GetOrCreateDynamicCppType(Type interfaceType, void* ptr) {
+	public Type TypeOf(Type interfaceType) {
 		Type? finalType = null;
 		if (intTypeToDynType.TryGetValue(interfaceType, out finalType)) {
 			return finalType;
@@ -641,7 +505,7 @@ public static unsafe class MarshalCpp
 			il.Emit(OpCodes.Ldarg_0);
 			il.Emit(OpCodes.Ldfld, pointerField);
 
-			MethodInfo platFree = typeof(MarshalCpp).GetMethod(nameof(Dealloc), BindingFlags.Public | BindingFlags.Static)!;
+			MethodInfo platFree = typeof(MarshalCpp).GetMethod(nameof(MarshalCpp.Dealloc), BindingFlags.Public | BindingFlags.Static)!;
 			il.Emit(OpCodes.Call, platFree);
 
 			il.Emit(OpCodes.Ret);
@@ -650,13 +514,13 @@ public static unsafe class MarshalCpp
 		}
 
 		// All fields the interface type implemented via properties with CppField attributes.
-		IEnumerable<PropertyInfo> fields = interfaceType.GetProperties().Where(IsValidCppField).OrderBy(GetPropertyFieldIndex);
-		PreventCppFieldGaps(fields);
+		IEnumerable<PropertyInfo> fields = interfaceType.GetProperties().Where(MarshalCpp.IsValidCppField).OrderBy(MarshalCpp.GetPropertyFieldIndex);
+		MarshalCpp.PreventCppFieldGaps(fields);
 		// All methods the interface implemented via CppMethodFrom* attributes.
-		IEnumerable<MethodInfo> methods = interfaceType.GetMethods().Where(IsValidCppMethod);
+		IEnumerable<MethodInfo> methods = interfaceType.GetMethods().Where(MarshalCpp.IsValidCppMethod);
 		// How much space the New<T> factory reserves in unallocated land
 		nuint allocation_size = 0;
-		nuint allocation_alignment = GetLargestStructSize(fields.Select(x => x.PropertyType));
+		nuint allocation_alignment = MarshalCpp.GetLargestStructSize(fields.Select(x => x.PropertyType));
 
 		foreach (var field in fields) {
 			var propertyType = field.PropertyType;
@@ -670,7 +534,7 @@ public static unsafe class MarshalCpp
 			if (generator == null)
 				throw new NotImplementedException($"Unable to resolve property '{field.Name}''s type ({propertyType.FullName ?? propertyType.Name}) to a DynamicCppFieldGenerator. This is either invalid/unimplemented behavior.");
 
-			nuint fieldOffset = allocation_size;
+			nint fieldOffset = (nint)allocation_size;
 			ConstructProperty(typeBuilder, generator, pointerField, pointerProperty, field, fieldOffset);
 			allocation_size += allocation_alignment;
 		}
@@ -689,31 +553,16 @@ public static unsafe class MarshalCpp
 		}
 
 		foreach (var method in methods) {
-			int? vtableOffsetN = method.GetCustomAttribute<CppMethodFromVTOffsetAttribute>()?.Offset;
 			bool vt_useSelfPtr = method.GetCustomAttribute<CppMethodSelfPtrAttribute>()?.HasSelfPointer ?? true;
 
 			nint cppMethod;
-			if (vtableOffsetN == null) {
-				var sigAttr = method.GetCustomAttributes<CppMethodFromSigScanAttribute>().Where(x => x.Architecture == Program.Architecture).FirstOrDefault();
-				if (sigAttr == null) {
-					genInterfaceStub(typeBuilder, method);
-					continue;
-				}
-
-				cppMethod = (int)Scanning.ScanModuleProc(sigAttr.DLL, sigAttr.Signature);
-			}
-			else if (ptr != null) {
-				nint vtablePtr = *(nint*)ptr;
-				nint* vtable = (nint*)vtablePtr;
-
-				int vt_offset = vtableOffsetN.Value;
-
-				cppMethod = vtable[vt_offset];
-			}
-			else {
-				genInterfaceStub(typeBuilder, method);
+			var sigAttr = method.GetCustomAttributes<CppMethodFromSigScanAttribute>().Where(x => x.Architecture == Program.Architecture).FirstOrDefault();
+			if (sigAttr == null) {
+				MarshalCpp.GenInterfaceStub(typeBuilder, method);
 				continue;
 			}
+
+			cppMethod = (int)Scanning.ScanModuleProc(sigAttr.DLL, sigAttr.Signature);
 
 			// Generate the delegate type
 			int typeIndex = 0;
@@ -727,16 +576,16 @@ public static unsafe class MarshalCpp
 			// Entirely guessing but regardless theres not a good enough way to automatically discern it hence this
 			// TODO: is this even a thing lol. I think I was just having a bad day with IL gen/etc
 			if (vt_useSelfPtr)
-				pushArray(typeof(nint), types, ref typeIndex);
+				types.PushSpan(typeof(nint), ref typeIndex);
 
 			// Figure out how to marshal any other types in the parameter list.
 			foreach (ParameterInfo param in parameters)
-				pushArray(getMarshalType(param), types, ref typeIndex);
+				types.PushSpan(MarshalCpp.GetMarshalType(param), ref typeIndex);
 
 			// The return type is always at the end of the delegate, even if void
 			// Since the return of a method is also a ParameterInfo that can be passed into getMarshalType again
 			// rather than be reused
-			pushArray(getMarshalType(method.ReturnParameter), types, ref typeIndex);
+			types.PushSpan(MarshalCpp.GetMarshalType(method.ReturnParameter), ref typeIndex);
 
 			// Rewrite the dynamic object's method so it implements the interface as expected
 			genInterfaceNative(typeBuilder, method, types, cppMethod, pointerField, vt_useSelfPtr);
@@ -745,15 +594,15 @@ public static unsafe class MarshalCpp
 		finalType = typeBuilder.CreateType();
 
 		constructors.Remove(typeBuilder);
-		constructors[finalType] = finalType.GetConstructor(ICppClassConstructorTypes)!;
+		constructors[finalType] = finalType.GetConstructor(MarshalCpp.SINGLE_TYPEOF_NINT_ARRAY)!;
 		intTypeToDynType[interfaceType] = finalType;
 		return finalType;
 	}
 
-	private static nuint ConstructProperty(
+	private nuint ConstructProperty(
 		TypeBuilder typeBuilder, DynamicCppFieldFactory generator,
 		FieldBuilder pointerField, PropertyInfo pointerProperty, PropertyInfo interfaceProperty,
-		nuint fieldOffset
+		nint fieldOffset
 	) {
 		string propName = interfaceProperty.Name;
 		Type propType = interfaceProperty.PropertyType;
@@ -772,7 +621,7 @@ public static unsafe class MarshalCpp
 		ILGenerator setterIL = setter.GetILGenerator();
 
 		// Call the DynamicCppFieldFactory to produce IL.
-		nuint fieldSize = generator(pointerField, pointerProperty, fieldOffset, interfaceProperty, getterIL, setterIL);
+		nuint fieldSize = generator(this, pointerField, pointerProperty, fieldOffset, interfaceProperty, getterIL, setterIL);
 
 		concreteProp.SetGetMethod(getter);
 		concreteProp.SetSetMethod(setter);
@@ -783,39 +632,7 @@ public static unsafe class MarshalCpp
 		return fieldSize;
 	}
 
-	public static T Cast<T>(nint ptr) where T : ICppClass => Cast<T>((void*)ptr);
-	public static T Cast<T>(void* ptr) where T : ICppClass {
-		var generatedType = GetOrCreateDynamicCppType(typeof(T), ptr);
-		return (T)Activator.CreateInstance(generatedType, [(nint)ptr])!;
-	}
-
-	private static Type getMarshalType(ParameterInfo param) {
-		if (param.ParameterType.IsAssignableTo(typeof(ICppClass)))
-			return typeof(nint);
-		if (param.ParameterType.IsAssignableTo(typeof(AnsiBuffer)))
-			return typeof(nint);
-
-		return param.ParameterType;
-	}
-	private static OpCode getNumericConversionOpcode(Type from, Type to) {
-		if (to == typeof(byte)) return OpCodes.Conv_U1;
-		if (to == typeof(sbyte)) return OpCodes.Conv_I1;
-		if (to == typeof(short)) return OpCodes.Conv_I2;
-		if (to == typeof(ushort)) return OpCodes.Conv_U2;
-		if (to == typeof(int)) return OpCodes.Conv_I4;
-		if (to == typeof(uint)) return OpCodes.Conv_U4;
-		if (to == typeof(long)) return OpCodes.Conv_I8;
-		if (to == typeof(ulong)) return OpCodes.Conv_U8;
-		if (to == typeof(float)) return OpCodes.Conv_R4;
-		if (to == typeof(double)) return OpCodes.Conv_R8;
-		if (to == typeof(IntPtr)) return OpCodes.Conv_I;
-		if (to == typeof(UIntPtr)) return OpCodes.Conv_U;
-
-		throw new NotSupportedException($"Cannot implicitly convert from {from} to {to}");
-	}
-
-
-	private static void genInterfaceNative(TypeBuilder typeBuilder, MethodInfo method, Type[] types, nint nativePtr, FieldBuilder _pointer, bool selfPtr) {
+	private void genInterfaceNative(TypeBuilder typeBuilder, MethodInfo method, Type[] types, nint nativePtr, FieldBuilder _pointer, bool selfPtr) {
 		var mparams = Array.ConvertAll(method.GetParameters(), p => p.ParameterType);
 		var methodBuilder = typeBuilder.DefineMethod(
 				method.Name,
@@ -868,11 +685,11 @@ public static unsafe class MarshalCpp
 	/// <param name="managedType">The type that we get from managed-land</param>
 	/// <param name="returns"></param>
 	/// <exception cref="InvalidOperationException"></exception>
-	private static void CheckCastEmitIL(ILGenerator il, Type nativeType, Type managedType, bool returns) {
+	private void CheckCastEmitIL(ILGenerator il, Type nativeType, Type managedType, bool returns) {
 		if (nativeType != managedType) {
 			if (managedType.IsAssignableTo(typeof(AnsiBuffer)) && nativeType == typeof(nint)) {
 				if (returns) {
-					ConstructorInfo ctor = typeof(AnsiBuffer).GetConstructor(ICppClassConstructorTypes)!;
+					ConstructorInfo ctor = typeof(AnsiBuffer).GetConstructor(MarshalCpp.SINGLE_TYPEOF_NINT_ARRAY)!;
 					il.Emit(OpCodes.Newobj, ctor);
 				}
 				else {
@@ -882,13 +699,13 @@ public static unsafe class MarshalCpp
 			}
 			else if (nativeType.IsValueType && managedType.IsValueType)
 				// Integer or float widening/narrowing
-				il.Emit(getNumericConversionOpcode(managedType, nativeType));
+				il.Emit(MarshalCpp.GetNumericConversionOpcode(managedType, nativeType));
 			else if (!nativeType.IsValueType && !managedType.IsValueType)
 				// Reference type cast
 				il.Emit(OpCodes.Castclass, nativeType);
 			else if (managedType.IsAssignableTo(typeof(ICppClass)) && nativeType == typeof(nint)) {
 				if (returns) {
-					var type = GetOrCreateDynamicCppType(managedType, null);
+					var type = TypeOf(managedType);
 					ConstructorInfo ctor = constructors[type];
 
 					il.Emit(OpCodes.Newobj, ctor);
@@ -909,8 +726,254 @@ public static unsafe class MarshalCpp
 				throw new InvalidOperationException($"Unsupported cast from {managedType} to {nativeType}");
 		}
 	}
+}
 
-	private static void genInterfaceStub(TypeBuilder typeBuilder, MethodInfo method) {
+public class Tier0Allocator : ICppAllocator
+{
+	public unsafe void* Alloc(nuint size, nuint alignment) => Tier0.Plat_Alloc(size);
+	public unsafe void Dealloc(void* ptr) => Tier0.Plat_Free(ptr);
+}
+
+/// <summary>
+/// A class to try implementing object-oriented marshalling between C++ and C# where exports aren't available.
+/// This works by using interfaces pointing to unmanaged contiguous memory generated by either C++ or C#, with 
+/// a pseudo-class compiler so C# can set fields and initialize new instances of the class (provided a valid 
+/// constructor or later manual vtable override).
+/// </summary>
+public static unsafe class MarshalCpp
+{
+	// It's probably not a good idea to make this stuff so static... whatever
+	/// <summary>
+	/// The active <see cref="ICppCompiler"/> to use.
+	/// </summary>
+	public static readonly ICppCompiler Compiler = new CppMSVC();
+	/// <summary>
+	/// The active <see cref="ICppAllocator"/> to use.
+	/// </summary>
+	public static readonly ICppAllocator Allocator = new Tier0Allocator();
+	/// <summary>
+	/// Enables console output during a few operations (such as class memory mapping)
+	/// </summary>
+	public static bool Debugging { get; set; } = true;
+	/// <summary>
+	/// Gets the size of a 
+	/// </summary>
+	/// <typeparam name="T"></typeparam>
+	/// <returns></returns>
+	public static nuint SizeOf<T>() where T : ICppClass => Compiler.SizeOf<T>();
+	/// <summary>
+	/// Allocator used by <see cref="MarshalCpp"/> operations
+	/// </summary>
+	/// <param name="size"></param>
+	/// <param name="alignment"></param>
+	/// <returns></returns>
+	public static unsafe void* Alloc(nuint size) => Allocator.Alloc(size, 0);
+	/// <summary>
+	/// Deallocator used by <see cref="MarshalCpp"/> operations
+	/// </summary>
+	/// <param name="size"></param>
+	/// <param name="alignment"></param>
+	/// <returns></returns>
+	public static unsafe void Dealloc(void* ptr) => Tier0.Plat_Free(ptr);
+
+	/// <summary>
+	/// Allocates a string, with ANSI encoding by default (or if <c><paramref name="encoding"/> == null</c>).
+	/// It is your responsibility to free it later (or not to)
+	/// </summary>
+	/// <param name="managed"></param>
+	/// <returns></returns>
+	public static unsafe void* StrToPtr(ReadOnlySpan<char> managed, Encoding? encoding = null) {
+		if (managed == null) return null;
+
+		encoding ??= Encoding.Default;
+		nuint strsize = (nuint)encoding.GetByteCount(managed);
+		void* strallc = Alloc(strsize + 1);
+		encoding.GetBytes(managed, new Span<byte>(strallc, (int)strsize));
+		((byte*)strallc)[strsize] = 0; // null terminate the string
+		return strallc;
+	}
+
+	/// <summary>
+	/// Converts a null-terminated string pointer back into a managed string using ANSI by default.
+	/// </summary>
+	/// <param name="ptr">Pointer to the null-terminated string.</param>
+	/// <param name="encoding">Encoding used to interpret the bytes (default is ANSI/Encoding.Default).</param>
+	/// <returns>The managed string, or null if <paramref name="ptr"/> is null.</returns>
+	public static unsafe string? PtrToStr(void* ptr, Encoding? encoding = null) {
+		if (ptr == null) return null;
+
+		encoding ??= Encoding.Default;
+
+		// Find the length of the null-terminated string
+		byte* p = (byte*)ptr;
+		int length = 0;
+		while (p[length] != 0) length++;
+
+		// Decode bytes to string
+		return encoding.GetString(p, length);
+	}
+
+	public static T New<T>() where T : ICppClass {
+		// We need to generate the type to know how much space it takes for allocation.
+		var generatedType = Compiler.TypeOf<T>();
+		nuint totalSize = Compiler.SizeOf<T>();
+		byte* ptr = (byte*)Alloc(totalSize);
+		// zero it out
+		for (nuint i = 0; i < totalSize; i++) {
+			ptr[i] = 0;
+		}
+
+		return (T)Activator.CreateInstance(generatedType, [(nint)ptr])!;
+	}
+
+	/// <summary>
+	/// Determines the ICppClass hashcode. Likely implemented by the dynamic type (ie. the dyntype
+	/// should insert this method call into its implementation)
+	/// </summary>
+	public static int CppClassHashcode(ICppClass self) => HashCode.Combine(self.Pointer);
+	/// <summary>
+	/// Determines ICppClass equality. Likely implemented by the dynamic type (ie. the dyntype
+	/// should insert this method call into its implementation)
+	/// </summary>
+	public static bool CppClassEquals(ICppClass? a, ICppClass? b) {
+		if ((a == null || a.Pointer == 0) && (b == null || b.Pointer == 0)) return true;
+		return a.Pointer == b.Pointer;
+	}
+
+	/// <summary>
+	/// Macro to emit MSIL instructions through <paramref name="il"/> to push a dynamic impl 
+	/// of <see cref="ICppClass"/>'s native pointer to the stack and perform optional pointer arithmetic.
+	/// <br/> - <c><see cref="OpCodes.Ldarg_0"/></c> <c>this</c> from <see cref="OpCodes.Ldarg_0"/>
+	/// <br/> - <c><see cref="OpCodes.Ldfld"/></c> <c><paramref name="pointerField"/></c>
+	/// <br/> - ^ is now the pointer from a <see cref="ICppClass"/> dynamic impl.
+	/// <br/> - If <paramref name="fieldOffset"/> != 0 ...
+	/// <br/> - ... <c><see cref="OpCodes.Ldc_I8"/></c> <paramref name="fieldOffset"/> casted to <see cref="long"/>
+	/// <br/> - ... <c><see cref="OpCodes.Conv_I"/></c> to cast the offset to a native integer
+	/// <br/> - ... <c><see cref="OpCodes.Add"/></c> to add the offset to the pointer.
+	/// <br/>
+	/// <br/> - The resulting IL would look similar to this in C#:
+	/// <code>
+	/// var <paramref name="pointerField"/> = this._pointer // loaded onto stack
+	/// // Only emitted if <paramref name="fieldOffset"/> != 0
+	/// pointerField += <paramref name="fieldOffset"/>
+	/// 
+	/// callFunc( ... (pointerField, whereever it is on the stack) ... )
+	/// </code>
+	/// </summary>
+	public static void PointerMathIL(FieldBuilder pointerField, ILGenerator il, nint fieldOffset) {
+		il.Emit(OpCodes.Ldarg_0);
+		il.Emit(OpCodes.Ldfld, pointerField);
+		if (fieldOffset != 0) {
+			il.Emit(OpCodes.Ldc_I8, (long)fieldOffset);
+			il.Emit(OpCodes.Conv_I);
+			il.Emit(OpCodes.Add);
+		}
+	}
+
+	/// <summary>
+	/// <c>[typeof(<see cref="nint"/>)]</c> macro
+	/// </summary>
+	public static readonly Type[] SINGLE_TYPEOF_NINT_ARRAY = [typeof(nint)];
+
+	public static bool IsValidCppMethod(MethodInfo x) {
+		return x.GetCustomAttribute<CppMethodFromSigScanAttribute>() != null;
+	}
+
+	public static bool IsValidCppField(PropertyInfo x) {
+		return x.GetCustomAttribute<CppFieldAttribute>() != null || x.GetCustomAttribute<CppVTableAttribute>() != null;
+	}
+
+	public static int GetPropertyFieldIndex(PropertyInfo x)
+		=> x.GetCustomAttribute<CppFieldAttribute>()?.FieldIndex ?? x.GetCustomAttribute<CppVTableAttribute>()!.FieldIndex;
+
+	public static void PreventCppFieldGaps(IEnumerable<PropertyInfo> fields) {
+		int lastIndex = -1;
+		int index = 0;
+		PropertyInfo? lastField = null;
+		foreach (PropertyInfo x in fields) {
+			var propIndex = GetPropertyFieldIndex(x);
+			if (propIndex != index)
+				throw new IndexOutOfRangeException($"MarshalCpp dynamic factory failed to ensure field order. This matters due to how sizing influences offsets.\n\nThe two offenders were:\n{lastField?.Name ?? "<start>"} [{lastIndex}] -> {x.Name} [{propIndex}]");
+			lastIndex = index;
+			index = propIndex + 1;
+			lastField = x;
+		}
+	}
+
+	public static readonly Dictionary<Type, nuint> DataSizes = new() {
+		{ typeof(bool),       sizeof(bool) },
+
+		{ typeof(sbyte),      sizeof(sbyte) },
+		{ typeof(short),      sizeof(short) },
+		{ typeof(int),        sizeof(int) },
+		{ typeof(long),       sizeof(long) },
+
+		{ typeof(byte),       sizeof(byte) },
+		{ typeof(ushort),     sizeof(ushort) },
+		{ typeof(uint),       sizeof(uint) },
+		{ typeof(ulong),      sizeof(ulong) },
+
+		{ typeof(float),      sizeof(float) },
+		{ typeof(double),     sizeof(double) },
+
+		{ typeof(nint),       (nuint)sizeof(nint) },
+		{ typeof(nuint),      (nuint)sizeof(nuint) },
+
+		{ typeof(ICppClass),  (nuint)sizeof(nint) },
+		{ typeof(AnsiBuffer), (nuint)sizeof(nint) },
+	};
+
+	public static nuint GetLargestStructSize(IEnumerable<Type> types) {
+		nuint s = 0;
+		foreach (var type in types) {
+			// kind of a sucky solution to this
+#pragma warning disable CS8625 // Cannot convert null literal to non-nullable reference type.
+			nuint typeSize = DataSizes.TryGetValue(type, out typeSize) ? typeSize : type.IsAssignableTo(typeof(ICppClass)) ? (nuint)sizeof(nint) : throw new Exception();
+#pragma warning restore CS8625 // Cannot convert null literal to non-nullable reference type.
+			if (typeSize > s)
+				s = typeSize;
+		}
+		return s;
+	}
+
+
+	public static T Cast<T>(nint ptr) where T : ICppClass => Cast<T>((void*)ptr);
+	public static T Cast<T>(void* ptr) where T : ICppClass {
+		var generatedType = Compiler.TypeOf(typeof(T));
+		return (T)Activator.CreateInstance(generatedType, [(nint)ptr])!;
+	}
+
+	public static Type GetMarshalType(ParameterInfo param) {
+		if (param.ParameterType.IsAssignableTo(typeof(ICppClass)))
+			return typeof(nint);
+		if (param.ParameterType.IsAssignableTo(typeof(AnsiBuffer)))
+			return typeof(nint);
+
+		return param.ParameterType;
+	}
+	public static OpCode GetNumericConversionOpcode(Type from, Type to) {
+		if (to == typeof(byte)) return OpCodes.Conv_U1;
+		if (to == typeof(sbyte)) return OpCodes.Conv_I1;
+		if (to == typeof(short)) return OpCodes.Conv_I2;
+		if (to == typeof(ushort)) return OpCodes.Conv_U2;
+		if (to == typeof(int)) return OpCodes.Conv_I4;
+		if (to == typeof(uint)) return OpCodes.Conv_U4;
+		if (to == typeof(long)) return OpCodes.Conv_I8;
+		if (to == typeof(ulong)) return OpCodes.Conv_U8;
+		if (to == typeof(float)) return OpCodes.Conv_R4;
+		if (to == typeof(double)) return OpCodes.Conv_R8;
+		if (to == typeof(IntPtr)) return OpCodes.Conv_I;
+		if (to == typeof(UIntPtr)) return OpCodes.Conv_U;
+
+		throw new NotSupportedException($"Cannot implicitly convert from {from} to {to}");
+	}
+
+	/// <summary>
+	/// Generates IL for an interface stub
+	/// </summary>
+	/// <param name="typeBuilder"></param>
+	/// <param name="method"></param>
+	public static void GenInterfaceStub(TypeBuilder typeBuilder, MethodInfo method) {
 		var methodBuilder = typeBuilder.DefineMethod(
 				method.Name,
 				MethodAttributes.Public | MethodAttributes.Virtual,

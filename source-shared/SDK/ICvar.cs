@@ -17,7 +17,7 @@ public unsafe interface ICvar : ICppClass
 
 public interface ConCommandBase : ICppClass
 {
-	[CppVTable(0, OperatingFlags.Win32, "vstdlib", "")] public nint ConCommandBase_VTable { get; set; }
+	[CppVTable(0)] public nint ConCommandBase_VTable { get; set; }
 	[CppField(1)] public ConCommandBase Next { get; set; }
 	[CppField(2)] public bool Registered { get; set; }
 	[CppField(3)] public AnsiBuffer Name { get; set; }
@@ -29,17 +29,17 @@ public unsafe interface ICommandCallback : ICppClass
 {
 	public void CommandCallback(void* command);
 }
-
 // not doing this right now
 public interface ICommandCompletionCallback : ICppClass
 {
 
 }
 
-public interface ConCommand : ConCommandBase {
-	[CppField<ConCommandBase>(0)] public ICommandCallback CommandCallback { get; set; }
-	[CppField<ConCommandBase>(1)] public ICommandCompletionCallback CommandCompletionCallback { get; set; }
-	[CppField<ConCommandBase>(2)][CppFieldBitWidth(1)] public bool HasCompletionCallback { get; set; }
-	[CppField<ConCommandBase>(3)][CppFieldBitWidth(1)] public bool UsingNewCommandCallback { get; set; }
-	[CppField<ConCommandBase>(4)][CppFieldBitWidth(1)] public bool UsingCommandCallbackInterface { get; set; }
+[CppInherit(typeof(ConCommandBase))]
+public interface ConCommand : ICppClass {
+	[CppField(0)] public ICommandCallback CommandCallback { get; set; }
+	[CppField(1)] public ICommandCompletionCallback CommandCompletionCallback { get; set; }
+	[CppField(2), FieldWidth(1)] public bool HasCompletionCallback { get; set; }
+	[CppField(3), FieldWidth(1)] public bool UsingNewCommandCallback { get; set; }
+	[CppField(4), FieldWidth(1)] public bool UsingCommandCallbackInterface { get; set; }
 }
