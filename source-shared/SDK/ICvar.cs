@@ -15,7 +15,7 @@ public unsafe interface ICvar : ICppClass
 #endif
 }
 
-public unsafe interface ConCommandBase : ICppClass
+public interface ConCommandBase : ICppClass
 {
 	[CppVTable(0, OperatingFlags.Win32, "vstdlib", "")] public nint ConCommandBase_VTable { get; set; }
 	[CppField(1)] public ConCommandBase Next { get; set; }
@@ -23,4 +23,8 @@ public unsafe interface ConCommandBase : ICppClass
 	[CppField(3)] public AnsiBuffer Name { get; set; }
 	[CppField(4)] public AnsiBuffer HelpString { get; set; }
 	[CppField(5)] public int Flags { get; set; }
+}
+
+public interface ConCommand : ConCommandBase {
+	[CppField<ConCommandBase>(0)][CppWidth(1)] public bool HasCompletionCallback
 }

@@ -85,7 +85,6 @@ public class CppMethodFromVTOffsetAttribute(int offset) : Attribute
 {
 	public int Offset => offset;
 }
-
 /// <summary>
 /// Marks where to read the function from a sigscan
 /// </summary>
@@ -106,7 +105,6 @@ public class CppMethodFromSigScanAttribute(OperatingFlags arch, string dll, stri
 		}
 	}
 }
-
 /// <summary>
 /// Defines a single C++ field via an interface property.
 /// <br/>
@@ -123,9 +121,28 @@ public class CppMethodFromSigScanAttribute(OperatingFlags arch, string dll, stri
 [AttributeUsage(AttributeTargets.Property)]
 public class CppFieldAttribute(int fieldIndex) : Attribute
 {
+	public virtual Type? BaseType { get; }
 	public int FieldIndex => fieldIndex;
 }
-
+/// <summary>
+/// (TODO) Defines a single C++ field, starting at the end index of an existing ICppClass interface.
+/// </summary>
+/// <param name="fieldIndex"></param>
+[AttributeUsage(AttributeTargets.Property)]
+public class CppFieldAttribute<T>(int fieldIndex) : CppFieldAttribute(fieldIndex) where T : ICppClass
+{
+	public override Type BaseType => typeof(T);
+}
+/// <summary>
+/// (TODO) Defines the bit-width of a field if necessary. This is used by the dynamic type assembler
+/// to determine some boolean flags. How is this going to be done given the current setup? We need some
+/// kind of custom accessor for these types, and probably need to start counting bitwise rather than bytewise
+/// while assembling the type, then aligning to the nearest class-alignment afterwards...
+/// </summary>
+/// <param name="bits"></param>
+public class CppFieldBitWidthAttribute(int bits) : Attribute {
+	public int Bits => bits;
+}
 /// <summary>
 /// Designates that this field is a virtual function table
 /// todo: how the hell are we even going to find these...
@@ -146,8 +163,6 @@ public class CppVTableAttribute(int fieldIndex, OperatingFlags arch, string dll,
 		}
 	}
 }
-
-
 /// <summary>
 /// Marks if the vtable method has a void* self pointer in its C++ signature. If not, it is excluded from the dynamic generation.
 /// The default is that the generator generates it. So be specific if this isn't the case.
