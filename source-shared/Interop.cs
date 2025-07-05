@@ -190,13 +190,6 @@ public static unsafe class MarshalCpp
 	private static AssemblyBuilder? DynAssembly;
 	private static ModuleBuilder? DynCppInterfaceFactory;
 
-	[DllImport("msvcrt.dll", CallingConvention = CallingConvention.Cdecl)]
-	static extern void* _aligned_malloc(nuint size, nuint alignment);
-
-	[DllImport("msvcrt.dll", CallingConvention = CallingConvention.Cdecl)]
-	static extern void _aligned_free(void* ptr);
-
-
 	/// <summary>
 	/// Allocator used by <see cref="MarshalCpp"/> operations
 	/// </summary>
