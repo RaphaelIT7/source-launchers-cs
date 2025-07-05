@@ -17,21 +17,23 @@ namespace Source;
 
 public readonly ref struct AnsiBuffer
 {
-	private readonly nint ptr;
+	public readonly nint Pointer;
 
 	public AnsiBuffer(string? text) {
-		ptr = Marshal.StringToHGlobalAnsi(text);
+		Pointer = Marshal.StringToHGlobalAnsi(text);
 	}
 
-	public unsafe AnsiBuffer(void* text) => ptr = (nint)text;
-	public unsafe AnsiBuffer(nint text) => ptr = text;
-	public unsafe sbyte* AsPointer() => (sbyte*)ptr.ToPointer();
-	public unsafe nint AsNativeInt() => ptr;
+	public unsafe AnsiBuffer(void* text) => Pointer = (nint)text;
+	public unsafe AnsiBuffer(nint text) => Pointer = text;
+	public unsafe sbyte* AsPointer() => (sbyte*)Pointer.ToPointer();
+	public unsafe nint AsNativeInt() => Pointer;
 	public void Dispose() {
-		Marshal.FreeHGlobal(ptr);
+		Marshal.FreeHGlobal(Pointer);
 	}
 	public static unsafe implicit operator sbyte*(AnsiBuffer buffer) => buffer.AsPointer();
+	public static unsafe implicit operator string?(AnsiBuffer buffer) => ToManaged(buffer.Pointer);
 	public static unsafe implicit operator AnsiBuffer(string text) => new(text);
+	public static unsafe string? ToManaged(nint ptr) => Marshal.PtrToStringAnsi(ptr);
 	public static unsafe string? ToManaged(void* ptr) => Marshal.PtrToStringAnsi(new(ptr));
 	public static unsafe string? ToManaged(sbyte* ptr) => Marshal.PtrToStringAnsi(new(ptr));
 	public static unsafe string? ToManaged(sbyte* ptr, uint len) => Marshal.PtrToStringAnsi(new(ptr), (int)len);
@@ -114,6 +116,27 @@ public class CppFieldAttribute(int fieldIndex) : Attribute
 	public int FieldIndex => fieldIndex;
 }
 
+/// <summary>
+/// Designates that this field is a virtual function table
+/// todo: how the hell are we even going to find these...
+/// </summary>
+public class CppVTableAttribute(int fieldIndex, OperatingFlags arch, string dll, string sig) : Attribute
+{
+	public int FieldIndex => fieldIndex;
+	public OperatingFlags Architecture => arch;
+	public string DLL => dll;
+	byte?[]? sigscan;
+	public byte?[] Signature {
+		get {
+			if (sigscan != null) return sigscan;
+
+			sigscan = Scanning.Parse(sig);
+
+			return sigscan;
+		}
+	}
+}
+
 
 /// <summary>
 /// Marks if the vtable method has a void* self pointer in its C++ signature. If not, it is excluded from the dynamic generation.
@@ -159,7 +182,12 @@ public static unsafe class MarshalCpp
 		// We need to generate the type to know how much space it takes for allocation.
 		var generatedType = GetOrCreateDynamicCppType(typeof(T), DynamicTypeFlags.HandleFromCSharpAllocation, null);
 		nuint totalSize = (nuint)generatedType.GetField("RESERVED_ALLOCATION_SIZE", BindingFlags.Public | BindingFlags.Static)!.GetValue(null)!;
-		void* ptr = Tier0.Plat_Alloc(100);
+		byte* ptr = (byte*)Tier0.Plat_Alloc(totalSize);
+		// zero it out
+		for (nuint i = 0; i < totalSize; i++) {
+			ptr[i] = 0;
+		}
+
 		return (T)Activator.CreateInstance(generatedType, [(nint)ptr])!;
 	}
 
@@ -321,7 +349,7 @@ public static unsafe class MarshalCpp
 		{
 			PointerMathIL(pointerField, setter, fieldOffset);
 			setter.Emit(OpCodes.Ldarg_1);
-			setter.Emit(OpCodes.Callvirt, typeof(AnsiBuffer).GetMethod("AsNativeInt")!);
+			setter.Emit(OpCodes.Ldfld, typeof(AnsiBuffer).GetField(nameof(AnsiBuffer.Pointer))!);
 
 			setter.Emit(OpCodes.Stobj, typeof(nint));
 			setter.Emit(OpCodes.Ret);
@@ -364,15 +392,18 @@ public static unsafe class MarshalCpp
 	}
 
 	public static bool IsValidCppField(PropertyInfo x) {
-		return x.GetCustomAttribute<CppFieldAttribute>() != null;
+		return x.GetCustomAttribute<CppFieldAttribute>() != null || x.GetCustomAttribute<CppVTableAttribute>() != null;
 	}
+
+	public static int GetPropertyFieldIndex(PropertyInfo x)
+		=> x.GetCustomAttribute<CppFieldAttribute>()?.FieldIndex ?? x.GetCustomAttribute<CppVTableAttribute>()!.FieldIndex;
 
 	public static void PreventCppFieldGaps(IEnumerable<PropertyInfo> fields) {
 		int lastIndex = -1;
 		int index = 0;
 		PropertyInfo? lastField = null;
 		foreach (PropertyInfo x in fields) {
-			var propIndex = x.GetCustomAttribute<CppFieldAttribute>()!.FieldIndex;
+			var propIndex = GetPropertyFieldIndex(x);
 			if (propIndex != index)
 				throw new IndexOutOfRangeException($"MarshalCpp dynamic factory failed to ensure field order. This matters due to how sizing influences offsets.\n\nThe two offenders were:\n{lastField?.Name ?? "<start>"} [{lastIndex}] -> {x.Name} [{propIndex}]");
 			lastIndex = index;
@@ -380,7 +411,6 @@ public static unsafe class MarshalCpp
 			lastField = x;
 		}
 	}
-	public static int CppFieldIndexSorter(PropertyInfo x) => x.GetCustomAttribute<CppFieldAttribute>()!.FieldIndex;
 
 	private static Type GetOrCreateDynamicCppType(Type interfaceType, DynamicTypeFlags flags, void* ptr) {
 		Type? finalType = null;
@@ -513,7 +543,7 @@ public static unsafe class MarshalCpp
 				"op_Implicit",
 				MethodAttributes.Public | MethodAttributes.Static | MethodAttributes.SpecialName | MethodAttributes.HideBySig,
 				typeof(nint),
-				new[] { typeBuilder }
+				[typeBuilder]
 			);
 			// Mark as 'implicit operator'
 
@@ -548,7 +578,7 @@ public static unsafe class MarshalCpp
 		}
 
 		// All fields the interface type implemented via properties with CppField attributes.
-		IEnumerable<PropertyInfo> fields = interfaceType.GetProperties().Where(IsValidCppField).OrderBy(CppFieldIndexSorter);
+		IEnumerable<PropertyInfo> fields = interfaceType.GetProperties().Where(IsValidCppField).OrderBy(GetPropertyFieldIndex);
 		PreventCppFieldGaps(fields);
 		// All methods the interface implemented via CppMethodFrom* attributes.
 		IEnumerable<MethodInfo> methods = interfaceType.GetMethods().Where(IsValidCppMethod);

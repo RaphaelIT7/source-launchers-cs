@@ -17,9 +17,10 @@ public unsafe interface ICvar : ICppClass
 
 public unsafe interface ConCommandBase : ICppClass
 {
-	[CppField(0)] public ConCommandBase Next { get; set; }
-	[CppField(1)] public bool Registered { get; set; }
-	[CppField(2)] public AnsiBuffer Name { get; set; }
-	[CppField(3)] public AnsiBuffer HelpString { get; set; }
-	[CppField(4)] public int Flags { get; set; }
+	[CppVTable(0, OperatingFlags.Win32, "vstdlib", "")] public nint ConCommandBase_VTable { get; set; }
+	[CppField(1)] public ConCommandBase Next { get; set; }
+	[CppField(2)] public bool Registered { get; set; }
+	[CppField(3)] public AnsiBuffer Name { get; set; }
+	[CppField(4)] public AnsiBuffer HelpString { get; set; }
+	[CppField(5)] public int Flags { get; set; }
 }
