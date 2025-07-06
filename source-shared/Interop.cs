@@ -39,13 +39,16 @@ public readonly struct NativeArray<T> {
 		Length = length;
 		ElementSize = elementSize;
 	}
+	public static unsafe NativeArray<T> operator +(NativeArray<T> a, nint addrOffset) => new((void*)(a.Pointer + addrOffset), (nuint)((nint)a.Length - addrOffset), a.ElementSize);
 	public NativeArray<NT> Cast<NT>() => new NativeArray<NT>(Pointer, Length, MarshalCpp.CalcArrayBitOffset(typeof(NT)));
 	public nuint BitOffsetOf(nuint index) => index * ElementSize;
 	public nuint ByteOffsetOf(nuint index) => (index * ElementSize) / 8;
 
+	public static unsafe implicit operator string(NativeArray<T> nativeStr) => MarshalCpp.PtrToStr((void*)nativeStr.Pointer);
+
 	public T this[nuint index] {
 		get {
-			return (T)MarshalCpp.Cast(typeof(T), Pointer);
+			return (T)MarshalCpp.Cast(typeof(T), Pointer + (nint)ByteOffsetOf(index));
 		}
 		set {
 
@@ -535,7 +538,6 @@ public unsafe class CppMSVC : ICppCompiler
 		// Getter
 		{
 			MarshalCpp.PointerMathIL(pointerField, getter, fieldOffset);
-			getter.Emit(OpCodes.Ldobj, typeof(nint));
 			getter.Emit(OpCodes.Ldc_I8, (long)fieldReqSize); 
 			getter.Emit(OpCodes.Conv_U);
 			getter.Emit(OpCodes.Ldc_I8, (long)fieldElSize); 

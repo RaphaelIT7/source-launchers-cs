@@ -25,9 +25,6 @@ internal unsafe class LoadModules : IImplementsDetours
 		CSys sys = MarshalCpp.Cast<CSys>(self);
 		sys.ConsoleOutput("Hello from .NET land!");
 
-		ICvar cvar = Source.Engine.CreateInterface<ICvar>("vstdlib", LoadModules.CVAR_INTERFACE_VERSION)!;
-		ConCommand lua_run = cvar.FindCommand("lua_run");
-
 		return true;
 	}
 

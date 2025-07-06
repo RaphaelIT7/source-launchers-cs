@@ -1,9 +1,13 @@
-﻿using MinHook;
+﻿using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+
+using MinHook;
 
 using Source;
 using Source.SDK;
 
 using System;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
@@ -17,7 +21,45 @@ internal class DetourConClearF : IImplementsDetours
 
 	static unsafe void csharpRunCallback(void* ccommandOpq) {
 		CCommand cmd = MarshalCpp.Cast<CCommand>(ccommandOpq);
-		Console.WriteLine($"You typed: {cmd.ArgSBuffer}");
+		var code = (string)(cmd.ArgSBuffer + cmd.ArgV0Size);
+
+		var syntaxTree = CSharpSyntaxTree.ParseText($@"
+using System;
+
+public class ScriptHost
+{{
+    public static void Run()
+    {{
+        {code};
+    }}
+}}
+");
+		var assemblyPath = Path.GetDirectoryName(typeof(object).Assembly.Location)!;
+		var compilation = CSharpCompilation.Create("DynamicAssembly")
+			.WithOptions(new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary))
+			.AddReferences(
+				MetadataReference.CreateFromFile(typeof(object).Assembly.Location),                      // System.Private.CoreLib.dll
+				MetadataReference.CreateFromFile(typeof(Console).Assembly.Location),                    // System.Console.dll
+				MetadataReference.CreateFromFile(Path.Combine(assemblyPath, "System.Runtime.dll")),     // System.Runtime.dll
+				MetadataReference.CreateFromFile(Path.Combine(assemblyPath, "netstandard.dll"))        // netstandard.dll
+			)
+			.AddSyntaxTrees(syntaxTree);
+
+		using var ms = new System.IO.MemoryStream();
+		var result = compilation.Emit(ms);
+
+		if (!result.Success) {
+			foreach (var diagnostic in result.Diagnostics)
+				Console.WriteLine(diagnostic.ToString());
+			return;
+		}
+
+		ms.Seek(0, System.IO.SeekOrigin.Begin);
+		var assembly = Assembly.Load(ms.ToArray());
+
+		var type = assembly.GetType("ScriptHost");
+		var method = type?.GetMethod("Run", BindingFlags.Public | BindingFlags.Static);
+		method?.Invoke(null, null);
 	}
 
 	static unsafe void ConClearF_Detour() {
