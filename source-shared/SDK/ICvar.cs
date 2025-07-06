@@ -29,6 +29,13 @@ public interface ConCommandBase : ICppClass
 	[CppField(5)] public int Flags { get; set; }
 }
 
+public interface CCommand : ICppClass {
+	public const int COMMAND_MAX_ARGC = 64;
+	public const int COMMAND_MAX_LENGTH = 512;
+	[CppField(0)] public int ArgCount { get; set; }
+	[CppField(1)] public nint ArgV0Size { get; set; }
+}
+
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 public unsafe delegate void FnCommandCallback_t(void* command);
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]

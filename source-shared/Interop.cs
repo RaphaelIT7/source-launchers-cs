@@ -112,7 +112,7 @@ public class CppMethodFromSigScanAttribute(OperatingFlags arch, string dll, stri
 /// <summary>
 /// Defines a single C++ field via an interface property.
 /// <br/>
-/// The <paramref name="fieldIndex"/> refers to a 0-based /// index (0, 1, 2, 3, 4, ...) of the field. 
+/// The <paramref name="Index"/> refers to a 0-based /// index (0, 1, 2, 3, 4, ...) of the field. 
 /// <br/>
 /// During dynamic assembly, the list of properties is filtered by those that have a CppFieldAttribute, 
 /// sorted by <see cref="FieldIndex"/>. Then the properties are checked to ensure no gaps between indices. 
@@ -121,12 +121,14 @@ public class CppMethodFromSigScanAttribute(OperatingFlags arch, string dll, stri
 /// (based on property type). The final allocation size is then pushed into a constant in the type (ie. 
 /// <c>public const nuint RESERVED_ALLOCATION_SIZE = FINAL ALLOCATION SIZE</c>).
 /// </summary>
-/// <param name="fieldIndex"></param>
+/// <param name="Index">The localized index for ordering purposes</param>
+/// <param name="Size">The size, if applicable - if not, does nothing.</param>
 [AttributeUsage(AttributeTargets.Property, AllowMultiple = false)]
-public class CppFieldAttribute(int fieldIndex) : Attribute
+public class CppFieldAttribute(int Index, int Size = 0) : Attribute
 {
 	public virtual Type? BaseType { get; }
-	public int FieldIndex => fieldIndex;
+	public int FieldIndex => Index;
+	public int FieldSize => Size;
 }
 /// <summary>
 /// Defines the inherited ICppClasses to inherit from.
@@ -222,7 +224,7 @@ public unsafe interface ICppAllocator
 
 public delegate nuint DynamicCppFieldFactory(
 	ICppCompiler compiler, FieldBuilder pointerField, PropertyInfo pointerProperty,
-	nint fieldBitOffset, PropertyInfo fieldProperty, ILGenerator getter, ILGenerator setter
+	nint fieldBitOffset, nuint fieldReqSize, PropertyInfo fieldProperty, ILGenerator getter, ILGenerator setter
 );
 public unsafe class CppMSVC : ICppCompiler
 {
@@ -281,7 +283,6 @@ public unsafe class CppMSVC : ICppCompiler
 		}
 	}
 
-
 	public const string RESERVED_ALLOCATION_SIZE = "RESERVED_ALLOCATION_SIZE";
 	public const string CLASS_ALIGNMENT = "CLASS_ALIGNMENT";
 
@@ -302,7 +303,7 @@ public unsafe class CppMSVC : ICppCompiler
 	public nuint AlignOf(IEnumerable<PropertyInfo> props) => MarshalCpp.GetLargestStructSize(props.Select(x => x.PropertyType));
 	public ConstructorInfo NintConstructorOf(Type t) => constructors[t];
 	static nuint ManagedCppClassInterfaceFactory(
-		ICppCompiler compiler, FieldBuilder pointerField, PropertyInfo pointerProperty, nint fieldBitOffset,
+		ICppCompiler compiler, FieldBuilder pointerField, PropertyInfo pointerProperty, nint fieldBitOffset, nuint fieldReqSize,
 		PropertyInfo fieldProperty, ILGenerator getter, ILGenerator setter
 	) {
 		Debug.Assert((fieldBitOffset % 8) == 0, $"Issues detected: {nameof(ManagedCppClassInterfaceFactory)} expected byte-aligned offset, but got +{fieldBitOffset % 8} bits?");
@@ -337,7 +338,7 @@ public unsafe class CppMSVC : ICppCompiler
 		return fieldSize;
 	}
 	static nuint UnmanagedTypeFieldFactory<T>(
-		ICppCompiler compiler, FieldBuilder pointerField, PropertyInfo pointerProperty, nint fieldBitOffset,
+		ICppCompiler compiler, FieldBuilder pointerField, PropertyInfo pointerProperty, nint fieldBitOffset, nuint fieldReqSize,
 		PropertyInfo fieldProperty, ILGenerator getter, ILGenerator setter
 	) where T : unmanaged {
 		nint fieldByteOffset = fieldBitOffset / 8;
@@ -421,7 +422,7 @@ public unsafe class CppMSVC : ICppCompiler
 		return fieldSize;
 	}
 	static nuint AnsiBufferFactory(
-		ICppCompiler compiler, FieldBuilder pointerField, PropertyInfo pointerProperty, nint fieldBitOffset,
+		ICppCompiler compiler, FieldBuilder pointerField, PropertyInfo pointerProperty, nint fieldBitOffset, nuint fieldReqSize,
 		PropertyInfo fieldProperty, ILGenerator getter, ILGenerator setter
 	) {
 		Debug.Assert((fieldBitOffset % 8) == 0, $"Issues detected: {nameof(AnsiBufferFactory)} expected byte-aligned offset, but got +{fieldBitOffset % 8} bits?");
@@ -450,13 +451,13 @@ public unsafe class CppMSVC : ICppCompiler
 		return fieldSize;
 	}
 	static nuint DelegateFactory(
-		ICppCompiler compiler, FieldBuilder pointerField, PropertyInfo pointerProperty, nint fieldBitOffset,
+		ICppCompiler compiler, FieldBuilder pointerField, PropertyInfo pointerProperty, nint fieldBitOffset, nuint fieldReqSize,
 		PropertyInfo fieldProperty, ILGenerator getter, ILGenerator setter
 	) {
 		Debug.Assert((fieldBitOffset % 8) == 0, $"Issues detected: {nameof(DelegateFactory)} expected byte-aligned offset, but got +{fieldBitOffset % 8} bits?");
 		nint fieldOffset = fieldBitOffset / 8;
 		nuint fieldSize = (nuint)sizeof(nint);
-		
+
 		MethodInfo ptr2del = typeof(Marshal).GetMethod(nameof(Marshal.GetDelegateForFunctionPointer), BindingFlags.Public | BindingFlags.Static, [typeof(nint), typeof(Type)])!;
 		MethodInfo del2ptr = typeof(Marshal).GetMethod(nameof(Marshal.GetFunctionPointerForDelegate), BindingFlags.Public | BindingFlags.Static, [typeof(Delegate)])!;
 
@@ -843,6 +844,9 @@ public unsafe class CppMSVC : ICppCompiler
 			var propertyType = field.PropertyType;
 
 			nuint? idealAlignment = null;
+			CppFieldAttribute? fieldAttr = field.GetCustomAttribute<CppFieldAttribute>();
+			nuint fieldSize = (nuint)(fieldAttr?.FieldSize ?? 0); 
+			
 			FieldWidthAttribute? widthAttr = field.GetCustomAttribute<FieldWidthAttribute>();
 			if (widthAttr != null)
 				idealAlignment = (nuint)widthAttr.Bits;
@@ -862,17 +866,17 @@ public unsafe class CppMSVC : ICppCompiler
 			builder.Pad(fieldBits);
 
 			nint fieldOffset = (nint)builder.AllocatedBits;
-			ConstructProperty(typeBuilder, generator, pointerField, pointerProperty, field, fieldOffset);
+			ConstructProperty(typeBuilder, generator, pointerField, pointerProperty, field, fieldOffset, fieldSize);
 
-			builder.AllocatedBits += fieldBits;
+			builder.AllocatedBits += fieldSize != 0 ? (fieldSize * fieldBits) : fieldBits;
 			builder.Map(fieldOffset, fieldBits, field.Name);
 		}
 	}
 
-	private nuint ConstructProperty(
+	private void ConstructProperty(
 		TypeBuilder typeBuilder, DynamicCppFieldFactory generator,
 		FieldBuilder pointerField, PropertyInfo pointerProperty, PropertyInfo interfaceProperty,
-		nint fieldOffset
+		nint fieldOffset, nuint fieldReqSize
 	) {
 		string propName = interfaceProperty.Name;
 		Type propType = interfaceProperty.PropertyType;
@@ -891,15 +895,13 @@ public unsafe class CppMSVC : ICppCompiler
 		ILGenerator setterIL = setter.GetILGenerator();
 
 		// Call the DynamicCppFieldFactory to produce IL.
-		nuint fieldSize = generator(this, pointerField, pointerProperty, fieldOffset, interfaceProperty, getterIL, setterIL);
+		generator(this, pointerField, pointerProperty, fieldOffset, fieldReqSize, interfaceProperty, getterIL, setterIL);
 
 		concreteProp.SetGetMethod(getter);
 		concreteProp.SetSetMethod(setter);
 
 		typeBuilder.DefineMethodOverride(getter, getterMethod);
 		typeBuilder.DefineMethodOverride(setter, setterMethod);
-
-		return fieldSize;
 	}
 
 	private void genInterfaceNative(TypeBuilder typeBuilder, MethodInfo method, Type[] types, nint nativePtr, FieldBuilder _pointer, bool selfPtr) {

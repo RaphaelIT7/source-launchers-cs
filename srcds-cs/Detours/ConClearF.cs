@@ -32,9 +32,7 @@ internal class DetourConClearF : IImplementsDetours
 		csharp_run.HelpString = "There's no way this works, right?"; 
 		csharp_run.ConCommandBase_VTable = lua_run.ConCommandBase_VTable; // proof of concept
 		csharp_run.Flags = 1 << 2;
-
 		csharp_run.CommandCallback = csharpRunCallback;
-		csharp_run.UsingNewCommandCallback = true;
 
 		cvar.RegisterConCommand(csharp_run);
 	}
