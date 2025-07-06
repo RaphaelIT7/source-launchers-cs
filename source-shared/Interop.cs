@@ -727,7 +727,7 @@ public unsafe class CppMSVC : ICppCompiler
 					Console.CursorTop = oldT + y;
 					Console.CursorLeft = 1;
 					string hex = $"{(y * (int)(builder.Alignment / 8)):X}";
-					Console.Write($" 0x{hex.PadLeft((int)sizeOfHex - hex.Length, '0')}");
+					Console.Write($" 0x{hex.PadLeft((int)sizeOfHex, '0')}");
 					approach = true;
 				}
 				var left = leftPad + 1;
