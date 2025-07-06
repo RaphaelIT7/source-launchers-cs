@@ -42,7 +42,6 @@ public unsafe delegate void FnCommandCallback_t(void* command);
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 public unsafe delegate void FnCommandCompletionCallback(AnsiBuffer partial); // todo
 
-
 [CppInherit(typeof(ConCommandBase))]
 public interface ConCommand : ConCommandBase
 {

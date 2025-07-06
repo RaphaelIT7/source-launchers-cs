@@ -16,7 +16,8 @@ namespace Source;
 
 // TODO: should this stuff use tier0 allocs
 
-public readonly struct NativeArray<T> {
+public readonly struct NativeArray<T>
+{
 	/// <summary>
 	/// Native contiguous memory starting location
 	/// </summary>
@@ -226,7 +227,7 @@ public interface ICppCompiler
 	/// <summary>
 	/// Produce a size from an interface type.
 	/// </summary>
-	public nuint SizeOf(Type t) ;
+	public nuint SizeOf(Type t);
 	public nuint SizeOf<T>() => SizeOf(typeof(T));
 	/// <summary>
 	/// Produce an alignment from an interface type.
@@ -538,9 +539,9 @@ public unsafe class CppMSVC : ICppCompiler
 		// Getter
 		{
 			MarshalCpp.PointerMathIL(pointerField, getter, fieldOffset);
-			getter.Emit(OpCodes.Ldc_I8, (long)fieldReqSize); 
+			getter.Emit(OpCodes.Ldc_I8, (long)fieldReqSize);
 			getter.Emit(OpCodes.Conv_U);
-			getter.Emit(OpCodes.Ldc_I8, (long)fieldElSize); 
+			getter.Emit(OpCodes.Ldc_I8, (long)fieldElSize);
 			getter.Emit(OpCodes.Conv_U);
 
 			ConstructorInfo ctor = fieldProperty.PropertyType.GetConstructor([typeof(nint), typeof(nuint), typeof(nuint)])!;
@@ -558,23 +559,25 @@ public unsafe class CppMSVC : ICppCompiler
 			setter.Emit(OpCodes.Ldfld, getRef);
 
 			setter.Emit(OpCodes.Conv_I);
-			setter.Emit(OpCodes.Stind_I); 
+			setter.Emit(OpCodes.Stind_I);
 			setter.Emit(OpCodes.Ret);
 		}
 
 		return fieldElSize;
 	}
 
-	public static nuint PropertyByteSize(PropertyInfo info) {
-		if (info.PropertyType.IsAssignableTo(typeof(ICppClass)))
+	public static nuint PropertyByteSize(Type propType) {
+		if (propType.IsAssignableTo(typeof(ICppClass)))
 			return (nuint)sizeof(nint);
-		if (info.PropertyType.IsAssignableTo(typeof(Delegate)))
-			return (nuint)sizeof(nint);
-
-		if (info.PropertyType.IsGenericType && info.PropertyType.GetGenericTypeDefinition() == typeof(NativeArray<>))
+		if (propType.IsAssignableTo(typeof(Delegate)))
 			return (nuint)sizeof(nint);
 
-		return MarshalCpp.DataSizes[info.PropertyType];
+		if (propType.IsGenericType && propType.GetGenericTypeDefinition() == typeof(NativeArray<>)) {
+			var gen = propType.GetGenericArguments()[0];
+			return (gen.IsGenericType && gen.GetGenericTypeDefinition() == typeof(NativeArray<>)) ? (nuint)sizeof(nint) : PropertyByteSize(gen);
+		}
+
+		return MarshalCpp.DataSizes[propType];
 	}
 	static readonly Dictionary<Type, DynamicCppFieldFactory> Generators = new() {
 		{ typeof(bool),       UnmanagedTypeFieldFactory<bool> },
@@ -931,8 +934,8 @@ public unsafe class CppMSVC : ICppCompiler
 
 			nuint? idealAlignment = null;
 			CppFieldAttribute? fieldAttr = field.GetCustomAttribute<CppFieldAttribute>();
-			nuint fieldSize = (nuint)(fieldAttr?.FieldSize ?? 0); 
-			
+			nuint fieldSize = (nuint)(fieldAttr?.FieldSize ?? 0);
+
 			FieldWidthAttribute? widthAttr = field.GetCustomAttribute<FieldWidthAttribute>();
 			if (widthAttr != null)
 				idealAlignment = (nuint)widthAttr.Bits;
@@ -950,7 +953,7 @@ public unsafe class CppMSVC : ICppCompiler
 			if (generator == null)
 				throw new NotImplementedException($"Unable to resolve property '{field.Name}''s type ({propertyType.FullName ?? propertyType.Name}) to a DynamicCppFieldGenerator. This is either invalid/unimplemented behavior.");
 
-			nuint fieldBits = idealAlignment ?? (PropertyByteSize(field) * 8);
+			nuint fieldBits = idealAlignment ?? (PropertyByteSize(field.PropertyType) * 8);
 			builder.Pad(fieldBits);
 
 			nint fieldOffset = (nint)builder.AllocatedBits;
@@ -1122,7 +1125,7 @@ public static unsafe class MarshalCpp
 		if (t.IsAssignableTo(typeof(ICppClass))) {
 			return (nuint)sizeof(nint) * 8; // Return the width of a pointer
 		}
-		else if(t.IsGenericType && t.GetGenericTypeDefinition() == typeof(NativeArray<>))
+		else if (t.IsGenericType && t.GetGenericTypeDefinition() == typeof(NativeArray<>))
 			return (nuint)sizeof(nint) * 8; // Return the width of a pointer
 		else {
 			return DataSizes[t] * 8;
@@ -1292,7 +1295,8 @@ public static unsafe class MarshalCpp
 		{ typeof(AnsiBuffer), (nuint)sizeof(nint) },
 	};
 
-	public struct TypeSizeUnit {
+	public struct TypeSizeUnit
+	{
 		public Type Type;
 		public nuint Size;
 
@@ -1311,10 +1315,10 @@ public static unsafe class MarshalCpp
 	public static nuint GetLargestStructSize(IEnumerable<Type> types) {
 		nuint s = 1;
 		foreach (var type in types) {
-			if(!DataSizes.TryGetValue(type, out nuint typeSize)) {
+			if (!DataSizes.TryGetValue(type, out nuint typeSize)) {
 				foreach (var unit in Units) {
 					if (type.IsGenericType) {
-						if(type.GetGenericTypeDefinition() == unit.Type) {
+						if (type.GetGenericTypeDefinition() == unit.Type) {
 							typeSize = unit.Size;
 							goto done;
 						}
@@ -1327,7 +1331,7 @@ public static unsafe class MarshalCpp
 				}
 				throw new CppClassAssemblyException($"Could not determine a type size during GetLargestStructSize assembly - prevents proper class alignment.");
 			}
-			done:
+		done:
 
 			if (typeSize > s)
 				s = typeSize;
