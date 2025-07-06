@@ -708,6 +708,52 @@ public unsafe class CppMSVC : ICppCompiler
 			il.Emit(OpCodes.Ret);
 		}
 
+		// This sucks to look at
+		if (MarshalCpp.Debugging) {
+			Console.WriteLine();
+			const nuint bitLen = 2;
+			const string zbytes = "0 bytes";
+			nint sizeOfHex = sizeof(nint) * 2;
+			nuint leftPad = (nuint)sizeOfHex + 4;
+			Console.WriteLine(new string(' ', (int)leftPad + 1) + $"         Memory Map for {interfaceType.Name}'s dynamic impl:");
+			Console.WriteLine(new string(' ', (int)leftPad + 1) + "| " + zbytes + new string(' ', ((int)(bitLen * 8) - zbytes.Length) - 2) + "|" + new string(' ', (int)(bitLen * 8) - 1) + "|" + new string(' ', (int)(bitLen * 8) - 1) + "|" + new string(' ', (int)(bitLen * 8) - 1) + "|");
+
+			var oldT = Console.CursorTop;
+			Span<bool> approached = stackalloc bool[(int)(builder.AllocatedBits / builder.Alignment) + 1];
+			foreach (var mapIndex in builder.ClassMap) {
+				var y = (int)(mapIndex.Bit / builder.Alignment);
+				ref bool approach = ref approached[y];
+				if (!approach) {
+					Console.CursorTop = oldT + y;
+					Console.CursorLeft = 1;
+					string hex = $"{(y * (int)(builder.Alignment / 8)):X}";
+					Console.Write($" 0x{hex.PadLeft((int)sizeOfHex - hex.Length, '0')}");
+					approach = true;
+				}
+				var left = leftPad + 1;
+				left += bitLen * (mapIndex.Bit % builder.Alignment);
+
+				string str;
+				int blockSize = (int)(mapIndex.Size * bitLen);
+				if (blockSize == 1)
+					str = "*";
+				else if (blockSize == 2)
+					str = "[]";
+				else {
+					str = "[";
+					str += (mapIndex.Name ?? "?");
+					str = str.Substring(0, Math.Min(blockSize, str.Length));
+					str = str.PadRight(blockSize, ' ');
+					str += ']';
+				}
+
+				Console.CursorLeft = (int)left; Console.Write(str);
+			}
+
+			Console.WriteLine();
+			Console.WriteLine();
+		}
+
 		finalType = typeBuilder.CreateType();
 
 		constructors.Remove(typeBuilder);
@@ -820,15 +866,6 @@ public unsafe class CppMSVC : ICppCompiler
 
 			builder.AllocatedBits += fieldBits;
 			builder.Map(fieldOffset, fieldBits, field.Name);
-		}
-
-		if (MarshalCpp.Debugging) {
-			Console.WriteLine("----------------------------------------------------------------");
-			Console.WriteLine($"Memory Map for {interfaceType.Name}'s dynamic impl:");
-			foreach (var mapIndex in builder.ClassMap) {
-				Console.WriteLine($"bit {mapIndex.Bit:0000} - size {mapIndex.Size:00} - name {mapIndex.Name}");
-			}
-			Console.WriteLine("----------------------------------------------------------------");
 		}
 	}
 
