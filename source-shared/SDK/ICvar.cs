@@ -1,5 +1,7 @@
 ﻿using Source.Main;
 
+using System.Runtime.InteropServices;
+
 namespace Source.SDK;
 
 public unsafe interface ICvar : ICppClass
@@ -27,7 +29,9 @@ public interface ConCommandBase : ICppClass
 	[CppField(5)] public int Flags { get; set; }
 }
 
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 public unsafe delegate void FnCommandCallback_t(void* command);
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 public unsafe delegate void FnCommandCompletionCallback(AnsiBuffer partial); // todo
 
 

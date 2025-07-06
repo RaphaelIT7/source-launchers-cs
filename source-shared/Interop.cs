@@ -456,7 +456,7 @@ public unsafe class CppMSVC : ICppCompiler
 		Debug.Assert((fieldBitOffset % 8) == 0, $"Issues detected: {nameof(DelegateFactory)} expected byte-aligned offset, but got +{fieldBitOffset % 8} bits?");
 		nint fieldOffset = fieldBitOffset / 8;
 		nuint fieldSize = (nuint)sizeof(nint);
-
+		
 		MethodInfo ptr2del = typeof(Marshal).GetMethod(nameof(Marshal.GetDelegateForFunctionPointer), BindingFlags.Public | BindingFlags.Static, [typeof(nint), typeof(Type)])!;
 		MethodInfo del2ptr = typeof(Marshal).GetMethod(nameof(Marshal.GetFunctionPointerForDelegate), BindingFlags.Public | BindingFlags.Static, [typeof(Delegate)])!;
 
@@ -743,7 +743,7 @@ public unsafe class CppMSVC : ICppCompiler
 					str = "[";
 					str += (mapIndex.Name ?? "?");
 					str = str.Substring(0, Math.Min(blockSize, str.Length));
-					str = str.PadRight(blockSize, ' ');
+					str = str.PadRight(blockSize, '=');
 					str += ']';
 				}
 

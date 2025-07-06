@@ -4,6 +4,7 @@ using Source;
 using Source.SDK;
 
 using System;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 namespace srcds_cs.Detours;
@@ -33,6 +34,7 @@ internal class DetourConClearF : IImplementsDetours
 		csharp_run.Flags = 1 << 2;
 
 		csharp_run.CommandCallback = csharpRunCallback;
+		csharp_run.UsingNewCommandCallback = true;
 
 		cvar.RegisterConCommand(csharp_run);
 	}
