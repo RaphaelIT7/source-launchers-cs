@@ -34,6 +34,7 @@ public interface CCommand : ICppClass {
 	public const int COMMAND_MAX_LENGTH = 512;
 	[CppField(0)] public int ArgCount { get; set; }
 	[CppField(1)] public nint ArgV0Size { get; set; }
+	[CppField(2, Size: COMMAND_MAX_LENGTH)] public NativeArray<sbyte> ArgSBuffer { get; set; }
 }
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]

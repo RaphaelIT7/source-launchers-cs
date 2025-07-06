@@ -16,7 +16,8 @@ internal class DetourConClearF : IImplementsDetours
 	static ConClearF? ConClearF_Original;
 
 	static unsafe void csharpRunCallback(void* ccommandOpq) {
-		Console.WriteLine("Wow!");
+		CCommand cmd = MarshalCpp.Cast<CCommand>(ccommandOpq);
+		Console.WriteLine($"You typed: {cmd.ArgSBuffer}");
 	}
 
 	static unsafe void ConClearF_Detour() {
@@ -33,6 +34,7 @@ internal class DetourConClearF : IImplementsDetours
 		csharp_run.ConCommandBase_VTable = lua_run.ConCommandBase_VTable; // proof of concept
 		csharp_run.Flags = 1 << 2;
 		csharp_run.CommandCallback = csharpRunCallback;
+		csharp_run.UsingNewCommandCallback = true;
 
 		cvar.RegisterConCommand(csharp_run);
 	}

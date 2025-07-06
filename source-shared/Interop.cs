@@ -16,6 +16,44 @@ namespace Source;
 
 // TODO: should this stuff use tier0 allocs
 
+public readonly struct NativeArray<T> {
+	/// <summary>
+	/// Native contiguous memory starting location
+	/// </summary>
+	public readonly nint Pointer;
+	/// <summary>
+	/// Total elements
+	/// </summary>
+	public readonly nuint Length;
+	/// <summary>
+	/// In bits, how much space the element takes up
+	/// </summary>
+	public readonly nuint ElementSize;
+	public unsafe NativeArray(void* ptr, nuint length, nuint elementSize) {
+		Pointer = (nint)ptr;
+		Length = length;
+		ElementSize = elementSize;
+	}
+	public unsafe NativeArray(nint ptr, nuint length, nuint elementSize) {
+		Pointer = ptr;
+		Length = length;
+		ElementSize = elementSize;
+	}
+	public NativeArray<NT> Cast<NT>() => new NativeArray<NT>(Pointer, Length, MarshalCpp.CalcArrayBitOffset(typeof(NT)));
+	public nuint BitOffsetOf(nuint index) => index * ElementSize;
+	public nuint ByteOffsetOf(nuint index) => (index * ElementSize) / 8;
+
+	public T this[nuint index] {
+		get {
+			return (T)MarshalCpp.Cast(typeof(T), Pointer);
+		}
+		set {
+
+		}
+	}
+}
+
+
 public readonly ref struct AnsiBuffer
 {
 	public readonly nint Pointer;
@@ -36,10 +74,9 @@ public readonly ref struct AnsiBuffer
 	public static unsafe implicit operator AnsiBuffer(string text) => new(text);
 	public unsafe string? ToManaged() => MarshalCpp.PtrToStr((void*)Pointer);
 
-	public static unsafe string? ToManaged(nint ptr) => Marshal.PtrToStringAnsi(ptr);
-	public static unsafe string? ToManaged(void* ptr) => Marshal.PtrToStringAnsi(new(ptr));
-	public static unsafe string? ToManaged(sbyte* ptr) => Marshal.PtrToStringAnsi(new(ptr));
-	public static unsafe string? ToManaged(sbyte* ptr, uint len) => Marshal.PtrToStringAnsi(new(ptr), (int)len);
+	public static unsafe string? ToManaged(nint ptr) => MarshalCpp.PtrToStr((void*)ptr);
+	public static unsafe string? ToManaged(void* ptr) => MarshalCpp.PtrToStr(ptr);
+	public static unsafe string? ToManaged(sbyte* ptr) => MarshalCpp.PtrToStr(ptr);
 
 	public override string? ToString() {
 		return ToManaged();
@@ -186,7 +223,8 @@ public interface ICppCompiler
 	/// <summary>
 	/// Produce a size from an interface type.
 	/// </summary>
-	public nuint SizeOf<T>() where T : ICppClass;
+	public nuint SizeOf(Type t) ;
+	public nuint SizeOf<T>() => SizeOf(typeof(T));
 	/// <summary>
 	/// Produce an alignment from an interface type.
 	/// </summary>
@@ -484,10 +522,54 @@ public unsafe class CppMSVC : ICppCompiler
 
 		return fieldSize;
 	}
+
+	// Wraps an unmanaged nint to a Span and back
+	static nuint NativeArrayFactory(
+		ICppCompiler compiler, FieldBuilder pointerField, PropertyInfo pointerProperty, nint fieldBitOffset, nuint fieldReqSize,
+		PropertyInfo fieldProperty, ILGenerator getter, ILGenerator setter
+	) {
+		Debug.Assert((fieldBitOffset % 8) == 0, $"Issues detected: {nameof(NativeArrayFactory)} expected byte-aligned offset, but got +{fieldBitOffset % 8} bits?");
+		nint fieldOffset = fieldBitOffset / 8;
+		nuint fieldElSize = MarshalCpp.CalcArrayBitOffset(fieldProperty.PropertyType.GetGenericArguments()[0]);
+
+		// Getter
+		{
+			MarshalCpp.PointerMathIL(pointerField, getter, fieldOffset);
+			getter.Emit(OpCodes.Ldobj, typeof(nint));
+			getter.Emit(OpCodes.Ldc_I8, (long)fieldReqSize); 
+			getter.Emit(OpCodes.Conv_U);
+			getter.Emit(OpCodes.Ldc_I8, (long)fieldElSize); 
+			getter.Emit(OpCodes.Conv_U);
+
+			ConstructorInfo ctor = fieldProperty.PropertyType.GetConstructor([typeof(nint), typeof(nuint), typeof(nuint)])!;
+			getter.Emit(OpCodes.Newobj, ctor);
+			getter.Emit(OpCodes.Ret);
+		}
+
+		// Setter
+		{
+			MarshalCpp.PointerMathIL(pointerField, setter, fieldOffset);
+
+			setter.Emit(OpCodes.Ldarg_1);
+
+			FieldInfo getRef = typeof(NativeArray<>).GetFields().Where(m => m.Name == "Pointer").First();
+			setter.Emit(OpCodes.Ldfld, getRef);
+
+			setter.Emit(OpCodes.Conv_I);
+			setter.Emit(OpCodes.Stind_I); 
+			setter.Emit(OpCodes.Ret);
+		}
+
+		return fieldElSize;
+	}
+
 	public static nuint PropertyByteSize(PropertyInfo info) {
 		if (info.PropertyType.IsAssignableTo(typeof(ICppClass)))
 			return (nuint)sizeof(nint);
 		if (info.PropertyType.IsAssignableTo(typeof(Delegate)))
+			return (nuint)sizeof(nint);
+
+		if (info.PropertyType.IsGenericType && info.PropertyType.GetGenericTypeDefinition() == typeof(NativeArray<>))
 			return (nuint)sizeof(nint);
 
 		return MarshalCpp.DataSizes[info.PropertyType];
@@ -514,12 +596,13 @@ public unsafe class CppMSVC : ICppCompiler
 		{ typeof(ICppClass),  ManagedCppClassInterfaceFactory },
 		{ typeof(AnsiBuffer), AnsiBufferFactory },
 		{ typeof(Delegate), DelegateFactory },
+		{ typeof(NativeArray<>), NativeArrayFactory },
 	};
 	private static bool resolveType(Type t, [NotNullWhen(true)] out DynamicCppFieldFactory? gen) {
 		return Generators.TryGetValue(t, out gen);
 	}
-	public nuint SizeOf<T>() where T : ICppClass {
-		var generatedType = TypeOf(typeof(T));
+	public nuint SizeOf(Type t) {
+		var generatedType = TypeOf(t);
 		nuint totalSize = (nuint)generatedType.GetField(RESERVED_ALLOCATION_SIZE, BindingFlags.Public | BindingFlags.Static)!.GetValue(null)!;
 		return totalSize;
 	}
@@ -717,6 +800,7 @@ public unsafe class CppMSVC : ICppCompiler
 			nint sizeOfHex = sizeof(nint) * 2;
 			nuint leftPad = (nuint)sizeOfHex + 4;
 			Console.WriteLine(new string(' ', (int)leftPad + 1) + $"         Memory Map for {interfaceType.Name}'s dynamic impl:");
+			Console.WriteLine(new string(' ', (int)leftPad + 1) + $"         size: {builder.AllocatedBits / 8} bytes, alignment: {builder.Alignment / 8} bytes");
 			Console.WriteLine(new string(' ', (int)leftPad + 1) + "| " + zbytes + new string(' ', ((int)(bitLen * 8) - zbytes.Length) - 2) + "|" + new string(' ', (int)(bitLen * 8) - 1) + "|" + new string(' ', (int)(bitLen * 8) - 1) + "|" + new string(' ', (int)(bitLen * 8) - 1) + "|");
 
 			var oldT = Console.CursorTop;
@@ -857,6 +941,8 @@ public unsafe class CppMSVC : ICppCompiler
 					resolveType(typeof(ICppClass), out generator);
 				else if (propertyType.IsAssignableTo(typeof(Delegate)))
 					resolveType(typeof(Delegate), out generator);
+				else if (propertyType.IsGenericType)
+					resolveType(propertyType.GetGenericTypeDefinition(), out generator);
 			}
 
 			if (generator == null)
@@ -1029,11 +1115,17 @@ public static unsafe class MarshalCpp
 	/// Enables console output during a few operations (such as class memory mapping)
 	/// </summary>
 	public static bool Debugging { get; set; } = true;
-	/// <summary>
-	/// Gets the size of a 
-	/// </summary>
-	/// <typeparam name="T"></typeparam>
-	/// <returns></returns>
+
+	public static nuint CalcArrayBitOffset(Type t) {
+		if (t.IsAssignableTo(typeof(ICppClass))) {
+			return (nuint)sizeof(nint) * 8; // Return the width of a pointer
+		}
+		else if(t.IsGenericType && t.GetGenericTypeDefinition() == typeof(NativeArray<>))
+			return (nuint)sizeof(nint) * 8; // Return the width of a pointer
+		else {
+			return DataSizes[t] * 8;
+		}
+	}
 	public static nuint SizeOf<T>() where T : ICppClass => Compiler.SizeOf<T>();
 	/// <summary>
 	/// Allocator used by <see cref="MarshalCpp"/> operations
@@ -1195,30 +1287,69 @@ public static unsafe class MarshalCpp
 		{ typeof(nint),       (nuint)sizeof(nint) },
 		{ typeof(nuint),      (nuint)sizeof(nuint) },
 
-		{ typeof(ICppClass),  (nuint)sizeof(nint) },
 		{ typeof(AnsiBuffer), (nuint)sizeof(nint) },
-		{ typeof(Delegate), (nuint)sizeof(nint) },
 	};
 
+	public struct TypeSizeUnit {
+		public Type Type;
+		public nuint Size;
+
+		public TypeSizeUnit(Type type, nuint size) {
+			this.Type = type;
+			this.Size = size;
+		}
+		public TypeSizeUnit(Type type, int size) : this(type, (nuint)size) { }
+	}
+	// These are for types that need to be evaluated with IsAssignableTo
+	readonly static List<TypeSizeUnit> Units = [
+		new(typeof(ICppClass), sizeof(nint)),
+		new(typeof(Delegate), sizeof(nint)),
+		new(typeof(NativeArray<>), sizeof(nint)),
+	];
 	public static nuint GetLargestStructSize(IEnumerable<Type> types) {
 		nuint s = 1;
 		foreach (var type in types) {
-			// kind of a sucky solution to this
-#pragma warning disable CS8625 // Cannot convert null literal to non-nullable reference type.
-			nuint typeSize = DataSizes.TryGetValue(type, out typeSize)
-				? typeSize
-				: type.IsAssignableTo(typeof(ICppClass))
-					? (nuint)sizeof(nint)
-					: type.IsAssignableTo(typeof(Delegate))
-						? (nuint)sizeof(nint)
-						: throw new CppClassAssemblyException($"Could not determine a type size during GetLargestStructSize assembly - prevents proper class alignment.");
-#pragma warning restore CS8625 // Cannot convert null literal to non-nullable reference type.
+			if(!DataSizes.TryGetValue(type, out nuint typeSize)) {
+				foreach (var unit in Units) {
+					if (type.IsGenericType) {
+						if(type.GetGenericTypeDefinition() == unit.Type) {
+							typeSize = unit.Size;
+							goto done;
+						}
+					}
+
+					if (type.IsAssignableTo(unit.Type)) {
+						typeSize = unit.Size;
+						goto done;
+					}
+				}
+				throw new CppClassAssemblyException($"Could not determine a type size during GetLargestStructSize assembly - prevents proper class alignment.");
+			}
+			done:
+
 			if (typeSize > s)
 				s = typeSize;
 		}
 		return s;
 	}
 
+	public static class CastHelper
+	{
+		public static T ReadPrimitive<T>(nint ptr) where T : unmanaged {
+			return Unsafe.Read<T>((void*)ptr);
+		}
+	}
+	public static object Cast(Type t, nint ptr) {
+		if (t.IsAssignableTo(typeof(ICppClass))) {
+			var generatedType = Compiler.TypeOf(t);
+			return Activator.CreateInstance(generatedType, [ptr])!;
+		}
+		else {
+			var method = typeof(CastHelper).GetMethod(nameof(CastHelper.ReadPrimitive), BindingFlags.Static | BindingFlags.Public);
+			var generic = method!.MakeGenericMethod(t);
+			return generic.Invoke(null, [ptr])!;
+		}
+	}
 
 	public static T Cast<T>(nint ptr) where T : ICppClass => Cast<T>((void*)ptr);
 	public static T Cast<T>(void* ptr) where T : ICppClass {
