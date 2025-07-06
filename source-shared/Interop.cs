@@ -11,10 +11,11 @@ using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
 using System.Diagnostics.Metrics;
 using System.Text;
+using System.Collections;
 
 namespace Source;
 
-public readonly struct NativeArray<T>
+public readonly struct NativeArray<T> : IEnumerable<T>
 {
 	/// <summary>
 	/// Native contiguous memory starting location
@@ -28,6 +29,7 @@ public readonly struct NativeArray<T>
 	/// In bits, how much space the element takes up
 	/// </summary>
 	public readonly nuint ElementSize;
+
 	public unsafe NativeArray(void* ptr, nuint length, nuint elementSize) {
 		Pointer = (nint)ptr;
 		Length = length;
@@ -43,19 +45,38 @@ public readonly struct NativeArray<T>
 	public nuint BitOffsetOf(nuint index) => index * ElementSize;
 	public nuint ByteOffsetOf(nuint index) => (index * ElementSize) / 8;
 
-	public static unsafe implicit operator string?(NativeArray<T> nativeStr) => MarshalCpp.PtrToStr((void*)nativeStr.Pointer);
-
-	public T this[nuint index] {
-		get {
-			return (T)MarshalCpp.Cast(typeof(T), Pointer + (nint)ByteOffsetOf(index));
-		}
-		set {
-
+	public IEnumerator<T> GetEnumerator() {
+		for (int i = 0; i < (int)Length; i++) {
+			yield return (T)MarshalCpp.Cast(typeof(T), Pointer + (nint)ByteOffsetOf((nuint)i));
 		}
 	}
+
+	IEnumerator IEnumerable.GetEnumerator() {
+		return GetEnumerator();
+	}
+
+	public static unsafe implicit operator string?(NativeArray<T> nativeStr) => MarshalCpp.PtrToStr((void*)nativeStr.Pointer);
 }
 
-public readonly ref struct NativeString
+public readonly unsafe struct NativePointer<T> where T : unmanaged
+{
+	public readonly nint Pointer;
+
+	public NativePointer(nint ptr) => Pointer = ptr;
+
+	public ref T Value => ref Unsafe.AsRef<T>((void*)Pointer);
+
+	public NativePointer<T> Deref(int level = 1) {
+		nint p = Pointer;
+		for (int i = 0; i < level; i++)
+			p = Unsafe.Read<nint>((void*)p);
+		return new NativePointer<T>(p);
+	}
+
+
+}
+
+public readonly struct NativeString
 {
 	public readonly nint Pointer;
 	public readonly nint Size = -1;
@@ -98,14 +119,16 @@ public readonly ref struct NativeString
 	public static unsafe implicit operator sbyte*(NativeString buffer) => buffer.AsPointer();
 	public static unsafe implicit operator string?(NativeString buffer) => ToManaged(buffer.Pointer);
 	public static unsafe implicit operator NativeString(string text) => new(text);
+	public static unsafe implicit operator NativeString(NativeArray<sbyte> sbytes) => new(sbytes.Pointer);
+	public static unsafe implicit operator NativeString(NativePointer<sbyte> sbytes) => new(sbytes.Pointer);
 	public unsafe string? ToManaged() => MarshalCpp.PtrToStr((void*)Pointer);
 
 	public static unsafe string? ToManaged(nint ptr) => MarshalCpp.PtrToStr((void*)ptr);
 	public static unsafe string? ToManaged(void* ptr) => MarshalCpp.PtrToStr(ptr);
 	public static unsafe string? ToManaged(sbyte* ptr) => MarshalCpp.PtrToStr(ptr);
 
-	public override string? ToString() {
-		return ToManaged();
+	public override string ToString() {
+		return ToManaged() ?? "<null>";
 	}
 }
 
@@ -286,10 +309,19 @@ public unsafe interface ICppAllocator
 // fieldOffset is the offset calculated by the assembler
 // builder is the builder that the dynamic assembler produces
 
-public delegate nuint DynamicCppFieldFactory(
-	ICppCompiler compiler, FieldBuilder pointerField, PropertyInfo pointerProperty,
-	nint fieldBitOffset, nuint fieldReqSize, PropertyInfo fieldProperty, ILGenerator getter, ILGenerator setter
-);
+public delegate nuint DynamicCppFieldFactory(in FieldFactoryBuilder builder);
+
+public struct FieldFactoryBuilder
+{
+	public ICppCompiler CppCompiler;
+	public FieldBuilder PointerField;
+	public PropertyInfo PointerProperty;
+	public nint FieldBitOffset;
+	public nuint FieldRequestedSize;
+	public PropertyInfo FieldProperty;
+	public ILGenerator GetterIL;
+	public ILGenerator SetterIL;
+}
 public unsafe class CppMSVC : ICppCompiler
 {
 	public struct MemoryMapIndex
@@ -298,6 +330,7 @@ public unsafe class CppMSVC : ICppCompiler
 		public nuint Bit;
 		public nuint Size;
 	}
+
 	public class CppClassBuilder
 	{
 		public nuint AllocatedBits;
@@ -366,10 +399,18 @@ public unsafe class CppMSVC : ICppCompiler
 	public nuint AlignOf(Type t) => AlignOf(GetFieldsOfT(t));
 	public nuint AlignOf(IEnumerable<PropertyInfo> props) => MarshalCpp.GetLargestStructSize(props.Select(x => x.PropertyType));
 	public ConstructorInfo NintConstructorOf(Type t) => constructors[t];
-	static nuint ManagedCppClassInterfaceFactory(
-		ICppCompiler compiler, FieldBuilder pointerField, PropertyInfo pointerProperty, nint fieldBitOffset, nuint fieldReqSize,
-		PropertyInfo fieldProperty, ILGenerator getter, ILGenerator setter
-	) {
+
+
+	static nuint ManagedCppClassInterfaceFactory(in FieldFactoryBuilder builder) {
+		ICppCompiler compiler = builder.CppCompiler;
+		FieldBuilder pointerField = builder.PointerField;
+		PropertyInfo pointerProperty = builder.PointerProperty;
+		nint fieldBitOffset = builder.FieldBitOffset;
+		nuint fieldReqSize = builder.FieldRequestedSize;
+		PropertyInfo fieldProperty = builder.FieldProperty;
+		ILGenerator getter = builder.GetterIL;
+		ILGenerator setter = builder.SetterIL;
+
 		Debug.Assert((fieldBitOffset % 8) == 0, $"Issues detected: {nameof(ManagedCppClassInterfaceFactory)} expected byte-aligned offset, but got +{fieldBitOffset % 8} bits?");
 		nint fieldOffset = fieldBitOffset / 8;
 		nuint fieldSize = (nuint)sizeof(nint);
@@ -401,10 +442,16 @@ public unsafe class CppMSVC : ICppCompiler
 
 		return fieldSize;
 	}
-	static nuint UnmanagedTypeFieldFactory<T>(
-		ICppCompiler compiler, FieldBuilder pointerField, PropertyInfo pointerProperty, nint fieldBitOffset, nuint fieldReqSize,
-		PropertyInfo fieldProperty, ILGenerator getter, ILGenerator setter
-	) where T : unmanaged {
+	static nuint UnmanagedTypeFieldFactory<T>(in FieldFactoryBuilder builder) where T : unmanaged {
+		ICppCompiler compiler = builder.CppCompiler;
+		FieldBuilder pointerField = builder.PointerField;
+		PropertyInfo pointerProperty = builder.PointerProperty;
+		nint fieldBitOffset = builder.FieldBitOffset;
+		nuint fieldReqSize = builder.FieldRequestedSize;
+		PropertyInfo fieldProperty = builder.FieldProperty;
+		ILGenerator getter = builder.GetterIL;
+		ILGenerator setter = builder.SetterIL;
+
 		nint fieldByteOffset = fieldBitOffset / 8;
 		nuint fieldSize = (nuint)sizeof(T);
 		// If aligned to 8-bit, can perform typical getter/setter.
@@ -485,10 +532,16 @@ public unsafe class CppMSVC : ICppCompiler
 
 		return fieldSize;
 	}
-	static nuint NativeStringFactory(
-		ICppCompiler compiler, FieldBuilder pointerField, PropertyInfo pointerProperty, nint fieldBitOffset, nuint fieldReqSize,
-		PropertyInfo fieldProperty, ILGenerator getter, ILGenerator setter
-	) {
+	static nuint NativeStringFactory(in FieldFactoryBuilder builder) {
+		ICppCompiler compiler = builder.CppCompiler;
+		FieldBuilder pointerField = builder.PointerField;
+		PropertyInfo pointerProperty = builder.PointerProperty;
+		nint fieldBitOffset = builder.FieldBitOffset;
+		nuint fieldReqSize = builder.FieldRequestedSize;
+		PropertyInfo fieldProperty = builder.FieldProperty;
+		ILGenerator getter = builder.GetterIL;
+		ILGenerator setter = builder.SetterIL;
+
 		Debug.Assert((fieldBitOffset % 8) == 0, $"Issues detected: {nameof(NativeStringFactory)} expected byte-aligned offset, but got +{fieldBitOffset % 8} bits?");
 		nint fieldOffset = fieldBitOffset / 8;
 		nuint fieldSize = (nuint)sizeof(nint);
@@ -497,7 +550,7 @@ public unsafe class CppMSVC : ICppCompiler
 		// Getter
 		{
 			MarshalCpp.PointerMathIL(pointerField, getter, fieldOffset);
-			
+
 			if (fieldArrSize <= 0)
 				getter.Emit(OpCodes.Ldobj, typeof(nint));
 			else {
@@ -529,10 +582,16 @@ public unsafe class CppMSVC : ICppCompiler
 
 		return fieldSize;
 	}
-	static nuint DelegateFactory(
-		ICppCompiler compiler, FieldBuilder pointerField, PropertyInfo pointerProperty, nint fieldBitOffset, nuint fieldReqSize,
-		PropertyInfo fieldProperty, ILGenerator getter, ILGenerator setter
-	) {
+	static nuint DelegateFactory(in FieldFactoryBuilder builder) {
+		ICppCompiler compiler = builder.CppCompiler;
+		FieldBuilder pointerField = builder.PointerField;
+		PropertyInfo pointerProperty = builder.PointerProperty;
+		nint fieldBitOffset = builder.FieldBitOffset;
+		nuint fieldReqSize = builder.FieldRequestedSize;
+		PropertyInfo fieldProperty = builder.FieldProperty;
+		ILGenerator getter = builder.GetterIL;
+		ILGenerator setter = builder.SetterIL;
+
 		Debug.Assert((fieldBitOffset % 8) == 0, $"Issues detected: {nameof(DelegateFactory)} expected byte-aligned offset, but got +{fieldBitOffset % 8} bits?");
 		nint fieldOffset = fieldBitOffset / 8;
 		nuint fieldSize = (nuint)sizeof(nint);
@@ -564,11 +623,19 @@ public unsafe class CppMSVC : ICppCompiler
 		return fieldSize;
 	}
 
+
+
 	// Wraps an unmanaged nint to a Span and back
-	static nuint NativeArrayFactory(
-		ICppCompiler compiler, FieldBuilder pointerField, PropertyInfo pointerProperty, nint fieldBitOffset, nuint fieldReqSize,
-		PropertyInfo fieldProperty, ILGenerator getter, ILGenerator setter
-	) {
+	static nuint NativeArrayFactory(in FieldFactoryBuilder builder) {
+		ICppCompiler compiler = builder.CppCompiler;
+		FieldBuilder pointerField = builder.PointerField;
+		PropertyInfo pointerProperty = builder.PointerProperty;
+		nint fieldBitOffset = builder.FieldBitOffset;
+		nuint fieldReqSize = builder.FieldRequestedSize;
+		PropertyInfo fieldProperty = builder.FieldProperty;
+		ILGenerator getter = builder.GetterIL;
+		ILGenerator setter = builder.SetterIL;
+
 		Debug.Assert((fieldBitOffset % 8) == 0, $"Issues detected: {nameof(NativeArrayFactory)} expected byte-aligned offset, but got +{fieldBitOffset % 8} bits?");
 		nint fieldOffset = fieldBitOffset / 8;
 		nuint fieldElSize = MarshalCpp.CalcArrayBitOffset(fieldProperty.PropertyType.GetGenericArguments()[0]);
@@ -603,16 +670,26 @@ public unsafe class CppMSVC : ICppCompiler
 		return fieldElSize;
 	}
 
-	public static nuint PropertyByteSize(Type propType) {
+	public static nuint PropertyByteSize(Type propType, nuint fieldReqSize) {
 		if (propType.IsAssignableTo(typeof(ICppClass)))
 			return (nuint)sizeof(nint);
 		if (propType.IsAssignableTo(typeof(Delegate)))
 			return (nuint)sizeof(nint);
 
-		if (propType.IsGenericType && propType.GetGenericTypeDefinition() == typeof(NativeArray<>)) {
+		if (propType.IsGenericType) {
 			var gen = propType.GetGenericArguments()[0];
-			return (gen.IsGenericType && gen.GetGenericTypeDefinition() == typeof(NativeArray<>)) ? (nuint)sizeof(nint) : PropertyByteSize(gen);
+			if (propType.GetGenericTypeDefinition() == typeof(NativeArray<>))
+				return (gen.IsGenericType && gen.GetGenericTypeDefinition() == typeof(NativeArray<>)) ? (nuint)sizeof(nint) : PropertyByteSize(gen, 0);
+			if (propType.GetGenericTypeDefinition() == typeof(NativePointer<>))
+				return (nuint)sizeof(nint);
 		}
+
+		if (propType.IsAssignableTo(typeof(NativeString)))
+			// If fieldReqSize > 0, then its an array, otherwise pointer
+			return fieldReqSize > 0 ? sizeof(sbyte) : (nuint)sizeof(nint);
+
+		if (propType.IsAssignableTo(typeof(NativePointer<>)))
+			return (nuint)sizeof(nint);
 
 		return MarshalCpp.DataSizes[propType];
 	}
@@ -640,7 +717,8 @@ public unsafe class CppMSVC : ICppCompiler
 		{ typeof(Delegate), DelegateFactory },
 		{ typeof(NativeArray<>), NativeArrayFactory },
 	};
-	private static bool resolveType(Type t, [NotNullWhen(true)] out DynamicCppFieldFactory? gen) {
+
+	private static bool ResolveType(Type t, [NotNullWhen(true)] out DynamicCppFieldFactory? gen) {
 		return Generators.TryGetValue(t, out gen);
 	}
 	public nuint SizeOf(Type t) {
@@ -969,28 +1047,28 @@ public unsafe class CppMSVC : ICppCompiler
 		foreach (var field in fields) {
 			var propertyType = field.PropertyType;
 
-			nuint? idealAlignment = null;
 			CppFieldAttribute? fieldAttr = field.GetCustomAttribute<CppFieldAttribute>();
 			nuint fieldSize = (nuint)(fieldAttr?.FieldSize ?? 0);
 
+			nuint? idealAlignment = null;
 			FieldWidthAttribute? widthAttr = field.GetCustomAttribute<FieldWidthAttribute>();
 			if (widthAttr != null)
 				idealAlignment = (nuint)widthAttr.Bits;
 
 			DynamicCppFieldFactory? generator = null;
-			if (!resolveType(propertyType, out generator)) {
+			if (!ResolveType(propertyType, out generator)) {
 				if (propertyType.IsAssignableTo(typeof(ICppClass)))
-					resolveType(typeof(ICppClass), out generator);
+					ResolveType(typeof(ICppClass), out generator);
 				else if (propertyType.IsAssignableTo(typeof(Delegate)))
-					resolveType(typeof(Delegate), out generator);
+					ResolveType(typeof(Delegate), out generator);
 				else if (propertyType.IsGenericType)
-					resolveType(propertyType.GetGenericTypeDefinition(), out generator);
+					ResolveType(propertyType.GetGenericTypeDefinition(), out generator);
 			}
 
 			if (generator == null)
 				throw new NotImplementedException($"Unable to resolve property '{field.Name}''s type ({propertyType.FullName ?? propertyType.Name}) to a DynamicCppFieldGenerator. This is either invalid/unimplemented behavior.");
 
-			nuint fieldBits = idealAlignment ?? (PropertyByteSize(field.PropertyType) * 8);
+			nuint fieldBits = idealAlignment ?? (PropertyByteSize(field.PropertyType, fieldSize) * 8);
 			builder.Pad(fieldBits);
 
 			nint fieldOffset = (nint)builder.AllocatedBits;
@@ -1023,8 +1101,20 @@ public unsafe class CppMSVC : ICppCompiler
 		ILGenerator setterIL = setter.GetILGenerator();
 
 		// Call the DynamicCppFieldFactory to produce IL.
-		generator(this, pointerField, pointerProperty, fieldOffset, fieldReqSize, interfaceProperty, getterIL, setterIL);
+		{
+			FieldFactoryBuilder fieldFactory = new() {
+				CppCompiler = this,
+				PointerField = pointerField,
+				PointerProperty = pointerProperty,
+				FieldBitOffset = fieldOffset,
+				FieldRequestedSize = fieldReqSize,
+				FieldProperty = interfaceProperty,
+				GetterIL = getterIL,
+				SetterIL = setterIL
+			};
 
+			generator(in fieldFactory);
+		}
 		concreteProp.SetGetMethod(getter);
 		concreteProp.SetSetMethod(setter);
 
@@ -1162,11 +1252,15 @@ public static unsafe class MarshalCpp
 		if (t.IsAssignableTo(typeof(ICppClass))) {
 			return (nuint)sizeof(nint) * 8; // Return the width of a pointer
 		}
-		else if (t.IsGenericType && t.GetGenericTypeDefinition() == typeof(NativeArray<>))
+		else if (t.IsGenericType)
+			if (t.GetGenericTypeDefinition() == typeof(NativeArray<>) || t.GetGenericTypeDefinition() == typeof(NativePointer<>))
+				return (nuint)sizeof(nint) * 8; // Return the width of a pointer
+			else {
+				return DataSizes[t] * 8;
+			}
+		else if(t == typeof(NativeString))
 			return (nuint)sizeof(nint) * 8; // Return the width of a pointer
-		else {
-			return DataSizes[t] * 8;
-		}
+		throw new CppClassAssemblyException($"{nameof(CalcArrayBitOffset)} failed to produce bit offset for {t.Name}");
 	}
 	public static nuint SizeOf<T>() where T : ICppClass => Compiler.SizeOf<T>();
 	/// <summary>
