@@ -2,5 +2,5 @@
 
 public interface CSys : ICppClass
 {
-	public unsafe void ConsoleOutput(AnsiBuffer txt) { }
+	public unsafe void ConsoleOutput(NativeString txt) { }
 }

@@ -21,7 +21,7 @@ internal class DetourConClearF : IImplementsDetours
 
 	static unsafe void csharpRunCallback(void* ccommandOpq) {
 		CCommand cmd = MarshalCpp.Cast<CCommand>(ccommandOpq);
-		var code = (string)(cmd.ArgSBuffer + cmd.ArgV0Size);
+		var code = cmd.ArgSBuffer[(int)cmd.ArgV0Size..];
 		#region C# gen
 
 		var syntaxTree = CSharpSyntaxTree.ParseText($@"

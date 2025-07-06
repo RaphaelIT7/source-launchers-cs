@@ -14,8 +14,6 @@ using System.Text;
 
 namespace Source;
 
-// TODO: should this stuff use tier0 allocs
-
 public readonly struct NativeArray<T>
 {
 	/// <summary>
@@ -45,7 +43,7 @@ public readonly struct NativeArray<T>
 	public nuint BitOffsetOf(nuint index) => index * ElementSize;
 	public nuint ByteOffsetOf(nuint index) => (index * ElementSize) / 8;
 
-	public static unsafe implicit operator string(NativeArray<T> nativeStr) => MarshalCpp.PtrToStr((void*)nativeStr.Pointer);
+	public static unsafe implicit operator string?(NativeArray<T> nativeStr) => MarshalCpp.PtrToStr((void*)nativeStr.Pointer);
 
 	public T this[nuint index] {
 		get {
@@ -57,25 +55,49 @@ public readonly struct NativeArray<T>
 	}
 }
 
-
-public readonly ref struct AnsiBuffer
+public readonly ref struct NativeString
 {
 	public readonly nint Pointer;
+	public readonly nint Size = -1;
 
-	public unsafe AnsiBuffer(string? text) {
+	public unsafe NativeString(string? text) {
 		Pointer = (nint)MarshalCpp.StrToPtr(text);
+		Size = text == null ? 0 : text.Length + 1;
+	}
+	public unsafe NativeString(void* pointer) {
+		Pointer = (nint)pointer;
+	}
+	public unsafe NativeString(void* pointer, nint size) {
+		Pointer = (nint)pointer;
+		Size = size;
+	}
+	public unsafe NativeString(nint pointer) {
+		Pointer = pointer;
+	}
+	public unsafe NativeString(nint pointer, nint size) {
+		Pointer = pointer;
+		Size = size;
 	}
 
-	public unsafe AnsiBuffer(void* text) => Pointer = (nint)text;
-	public unsafe AnsiBuffer(nint text) => Pointer = text;
 	public unsafe sbyte* AsPointer() => (sbyte*)Pointer.ToPointer();
 	public unsafe nint AsNativeInt() => Pointer;
 	public unsafe void Dispose() {
 		MarshalCpp.Dealloc((void*)Pointer);
 	}
-	public static unsafe implicit operator sbyte*(AnsiBuffer buffer) => buffer.AsPointer();
-	public static unsafe implicit operator string?(AnsiBuffer buffer) => ToManaged(buffer.Pointer);
-	public static unsafe implicit operator AnsiBuffer(string text) => new(text);
+
+	public unsafe NativeString this[Range range] {
+		get {
+			var (offset, length) = range.GetOffsetAndLength((int)Size);
+			if (offset < 0 || length < 0 || offset + length > Size)
+				throw new ArgumentOutOfRangeException(nameof(range));
+
+			return new NativeString((sbyte*)Pointer + offset, length);
+		}
+	}
+
+	public static unsafe implicit operator sbyte*(NativeString buffer) => buffer.AsPointer();
+	public static unsafe implicit operator string?(NativeString buffer) => ToManaged(buffer.Pointer);
+	public static unsafe implicit operator NativeString(string text) => new(text);
 	public unsafe string? ToManaged() => MarshalCpp.PtrToStr((void*)Pointer);
 
 	public static unsafe string? ToManaged(nint ptr) => MarshalCpp.PtrToStr((void*)ptr);
@@ -463,19 +485,27 @@ public unsafe class CppMSVC : ICppCompiler
 
 		return fieldSize;
 	}
-	static nuint AnsiBufferFactory(
+	static nuint NativeStringFactory(
 		ICppCompiler compiler, FieldBuilder pointerField, PropertyInfo pointerProperty, nint fieldBitOffset, nuint fieldReqSize,
 		PropertyInfo fieldProperty, ILGenerator getter, ILGenerator setter
 	) {
-		Debug.Assert((fieldBitOffset % 8) == 0, $"Issues detected: {nameof(AnsiBufferFactory)} expected byte-aligned offset, but got +{fieldBitOffset % 8} bits?");
+		Debug.Assert((fieldBitOffset % 8) == 0, $"Issues detected: {nameof(NativeStringFactory)} expected byte-aligned offset, but got +{fieldBitOffset % 8} bits?");
 		nint fieldOffset = fieldBitOffset / 8;
 		nuint fieldSize = (nuint)sizeof(nint);
+		nint fieldArrSize = (nint)fieldReqSize;
 
 		// Getter
 		{
 			MarshalCpp.PointerMathIL(pointerField, getter, fieldOffset);
-			getter.Emit(OpCodes.Ldobj, typeof(nint));
-			ConstructorInfo ctor = typeof(AnsiBuffer).GetConstructor(MarshalCpp.SINGLE_TYPEOF_NINT_ARRAY)!;
+			
+			if (fieldArrSize <= 0)
+				getter.Emit(OpCodes.Ldobj, typeof(nint));
+			else {
+				getter.Emit(OpCodes.Ldc_I8, (long)fieldArrSize);
+				getter.Emit(OpCodes.Conv_I);
+			}
+
+			ConstructorInfo ctor = typeof(NativeString).GetConstructor([typeof(nint), typeof(nint)])!;
 			getter.Emit(OpCodes.Newobj, ctor);
 			getter.Emit(OpCodes.Ret);
 		}
@@ -484,9 +514,16 @@ public unsafe class CppMSVC : ICppCompiler
 		{
 			MarshalCpp.PointerMathIL(pointerField, setter, fieldOffset);
 			setter.Emit(OpCodes.Ldarg_1);
-			setter.Emit(OpCodes.Ldfld, typeof(AnsiBuffer).GetField(nameof(AnsiBuffer.Pointer))!);
-
-			setter.Emit(OpCodes.Stobj, typeof(nint));
+			setter.Emit(OpCodes.Ldfld, typeof(NativeString).GetField(nameof(NativeString.Pointer))!);
+			if (fieldArrSize <= 0)
+				setter.Emit(OpCodes.Stobj, typeof(nint));
+			else {
+				// read NativeString untl null character into pointer at PointerMathIl
+				MethodInfo copyMethod = typeof(MarshalCpp).GetMethod(nameof(MarshalCpp.CopyNullTerminatedString))!;
+				setter.Emit(OpCodes.Ldc_I8, (long)fieldArrSize); // max byte count
+				setter.Emit(OpCodes.Conv_I); // max byte count
+				setter.Emit(OpCodes.Call, copyMethod);
+			}
 			setter.Emit(OpCodes.Ret);
 		}
 
@@ -599,7 +636,7 @@ public unsafe class CppMSVC : ICppCompiler
 		{ typeof(nuint),      UnmanagedTypeFieldFactory<nuint> },
 
 		{ typeof(ICppClass),  ManagedCppClassInterfaceFactory },
-		{ typeof(AnsiBuffer), AnsiBufferFactory },
+		{ typeof(NativeString), NativeStringFactory },
 		{ typeof(Delegate), DelegateFactory },
 		{ typeof(NativeArray<>), NativeArrayFactory },
 	};
@@ -1050,13 +1087,13 @@ public unsafe class CppMSVC : ICppCompiler
 	/// <exception cref="InvalidOperationException"></exception>
 	private void CheckCastEmitIL(ILGenerator il, Type nativeType, Type managedType, bool returns) {
 		if (nativeType != managedType) {
-			if (managedType.IsAssignableTo(typeof(AnsiBuffer)) && nativeType == typeof(nint)) {
+			if (managedType.IsAssignableTo(typeof(NativeString)) && nativeType == typeof(nint)) {
 				if (returns) {
-					ConstructorInfo ctor = typeof(AnsiBuffer).GetConstructor(MarshalCpp.SINGLE_TYPEOF_NINT_ARRAY)!;
+					ConstructorInfo ctor = typeof(NativeString).GetConstructor(MarshalCpp.SINGLE_TYPEOF_NINT_ARRAY)!;
 					il.Emit(OpCodes.Newobj, ctor);
 				}
 				else {
-					var field = typeof(AnsiBuffer).GetField(nameof(AnsiBuffer.Pointer))!;
+					var field = typeof(NativeString).GetField(nameof(NativeString.Pointer))!;
 					il.Emit(OpCodes.Ldfld, field);
 				}
 			}
@@ -1183,7 +1220,19 @@ public static unsafe class MarshalCpp
 		// Decode bytes to string
 		return encoding.GetString(p, length);
 	}
+	public static unsafe void CopyNullTerminatedString(void* dest, void* src, nint maxBytes) {
+		byte* d = (byte*)dest;
+		byte* s = (byte*)src;
+		int i = 0;
 
+		while (i < maxBytes && *s != 0) {
+			*d++ = *s++;
+			i++;
+		}
+
+		if (i < maxBytes)
+			*d = 0;
+	}
 	public static T New<T>() where T : ICppClass {
 		// We need to generate the type to know how much space it takes for allocation.
 		var generatedType = Compiler.TypeOf<T>();
@@ -1292,7 +1341,7 @@ public static unsafe class MarshalCpp
 		{ typeof(nint),       (nuint)sizeof(nint) },
 		{ typeof(nuint),      (nuint)sizeof(nuint) },
 
-		{ typeof(AnsiBuffer), (nuint)sizeof(nint) },
+		{ typeof(NativeString), (nuint)sizeof(nint) },
 	};
 
 	public struct TypeSizeUnit
@@ -1366,7 +1415,7 @@ public static unsafe class MarshalCpp
 	public static Type GetMarshalType(ParameterInfo param) {
 		if (param.ParameterType.IsAssignableTo(typeof(ICppClass)))
 			return typeof(nint);
-		if (param.ParameterType.IsAssignableTo(typeof(AnsiBuffer)))
+		if (param.ParameterType.IsAssignableTo(typeof(NativeString)))
 			return typeof(nint);
 		if (param.ParameterType.IsAssignableTo(typeof(Delegate)))
 			return typeof(nint);
