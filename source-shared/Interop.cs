@@ -921,8 +921,11 @@ public unsafe class CppMSVC : ICppCompiler
 			nuint leftPad = (nuint)sizeOfHex + 4;
 			Console.WriteLine(new string(' ', (int)leftPad + 1) + $"         Memory Map for {interfaceType.Name}'s dynamic impl:");
 			Console.WriteLine(new string(' ', (int)leftPad + 1) + $"         size: {builder.AllocatedBits / 8} bytes, alignment: {builder.Alignment / 8} bytes");
-			Console.WriteLine(new string(' ', (int)leftPad + 1) + "| " + zbytes + new string(' ', ((int)(bitLen * 8) - zbytes.Length) - 2) + "|" + new string(' ', (int)(bitLen * 8) - 1) + "|" + new string(' ', (int)(bitLen * 8) - 1) + "|" + new string(' ', (int)(bitLen * 8) - 1) + "|");
-
+			Console.Write(new string(' ', (int)leftPad + 1) + "| " + zbytes + new string(' ', ((int)(bitLen * 8) - zbytes.Length) - 2));
+			for (int i = 1; i < (int)builder.Alignment / 8; i++) {
+				Console.Write("|" + new string(' ', (int)(bitLen * 8) - 1));
+			}
+			Console.WriteLine("|");
 			var oldT = Console.CursorTop;
 			Span<bool> approached = stackalloc bool[(int)(builder.AllocatedBits / builder.Alignment) + 1];
 			foreach (var mapIndex in builder.ClassMap) {

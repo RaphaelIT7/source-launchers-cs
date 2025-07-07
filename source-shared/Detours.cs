@@ -99,6 +99,8 @@ public unsafe static class DetourManager
 		NotSupported = false;
 		return !notSupported;
 	}
+	public static T AddDetour<T>(this HookEngine engine, string module, string pattern, T del) where T : Delegate
+		=> AddDetour(engine, module, Scanning.Parse(pattern), del);
 	public static T AddDetour<T>(this HookEngine engine, string module, ReadOnlySpan<byte?> pattern, T del) where T : Delegate {
 		T original = engine.CreateHook(Scanning.ScanModuleProc(module, pattern), del);
 		return original;

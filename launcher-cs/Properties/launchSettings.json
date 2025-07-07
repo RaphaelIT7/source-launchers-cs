@@ -1,8 +1,9 @@
 {
   "profiles": {
-    "launcher-cs": {
-      "commandName": "Project",
-      "nativeDebugging": true
-    }
+	"launcher-cs": {
+		"commandName": "Project",
+		"commandLineArgs": "",
+		"nativeDebugging": true
+	}
   }
 }

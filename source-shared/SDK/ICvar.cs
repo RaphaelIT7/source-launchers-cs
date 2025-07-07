@@ -33,7 +33,7 @@ public interface CCommand : ICppClass {
 	public const int COMMAND_MAX_ARGC = 64;
 	public const int COMMAND_MAX_LENGTH = 512;
 	[CppField(0)] public int ArgCount { get; set; }
-	[CppField(1)] public nint ArgV0Size { get; set; }
+	[CppField(1)] public int ArgV0Size { get; set; }
 	[CppField(2, Size: COMMAND_MAX_LENGTH)] public NativeString ArgSBuffer { get; set; }
 	[CppField(3, Size: COMMAND_MAX_LENGTH)] public NativeString ArgVBuffer { get; set; }
 	[CppField(4, Size: COMMAND_MAX_ARGC)] public NativeArray<NativeString> PPArgV { get; set; }
