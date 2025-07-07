@@ -20,7 +20,8 @@ internal class DetourConClearF : IImplementsDetours
 	static ConClearF? ConClearF_Original;
 
 	static unsafe void csharpRunCallback(void* ccommandOpq) {
-		CCommand cmd = MarshalCpp.Cast<CCommand>(ccommandOpq);
+		CCommand cmd = MarshalCpp.Cast<CCommand>(ccommandOpq); // TODO: the delegate ideally should be managed and produce an unmanaged delegate on the fly with correct
+		// calling conventions, so this ^^^ cast doesnt have to happen
 		var code = cmd.ArgSBuffer[(int)cmd.ArgV0Size..];
 		#region C# gen
 
