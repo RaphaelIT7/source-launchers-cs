@@ -85,6 +85,6 @@ public class ScriptHost
 	}
 
 	public void SetupWin32(HookEngine engine) {
-		ConClearF_Original = engine.AddDetour<ConClearF>("engine.dll", [0xE8, 0xDB, 0x83, 0x13, 0x00, 0x8B, 0xC8, 0x8B, 0x10, 0xFF, 0x52, 0x4C], new(ConClearF_Detour));
+		ConClearF_Original = engine.AddDetour<ConClearF>("engine.dll", [0xE8, null, null, null, null, 0x8B, 0xC8, 0x8B, 0x10, 0xFF, 0x52, 0x4C], new(ConClearF_Detour));
 	}
 }
