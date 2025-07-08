@@ -23,6 +23,6 @@
 	<PropertyGroup>
 		<DefineConstants>$(DefineConstants);CSTRIKE_TIER0;CSTRIKE_VSTDLIB;BUILD_GMOD</DefineConstants>
 	</PropertyGroup>
-	<Import Project="UserSpecific.props" />
+	<Import Project="../UserSpecific.props" />
 	
 </Project>

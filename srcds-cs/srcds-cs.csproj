@@ -27,6 +27,6 @@
 	<PropertyGroup>
 		<DefineConstants>$(DefineConstants);BUILD_GMOD</DefineConstants>
 	</PropertyGroup>
-	<Import Project="UserSpecific.props" />
+	<Import Project="../UserSpecific.props" />
 	
 </Project>
